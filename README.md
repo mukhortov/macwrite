@@ -31,6 +31,8 @@ the terminal without opening a window.
 
 ## Shortcuts
 
+Every command is also in the menu bar, under File, Edit, View, Window, and Help.
+
 - `⌘S` saves. Untitled documents ask where to save.
 - `⇧⌘S` saves as.
 - `⌘O` opens a Markdown file.

@@ -1,3 +1,4 @@
+#include <CoreFoundation/CoreFoundation.h>
 #include <QFont>
 #include <QFontDatabase>
 #include <QApplication>
@@ -19,6 +20,11 @@ int main(int argc, char *argv[]) {
     if (const std::optional<int> exitCode =
             Cli::handleArguments(argc, argv, QStringLiteral(MACWRITE_VERSION)))
         return *exitCode;
+
+    // AppKit adds an Enter Full Screen item of its own to a menu called View,
+    // which would sit beside the one Macwrite's View menu already has.
+    CFPreferencesSetAppValue(CFSTR("NSFullScreenMenuItemEverywhere"), kCFBooleanFalse,
+                             kCFPreferencesCurrentApplication);
 
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("macwrite"));

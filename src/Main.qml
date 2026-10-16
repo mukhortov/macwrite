@@ -39,6 +39,12 @@ ApplicationWindow {
     property string pendingAction: ""
     property bool replaceOpen: false
     property bool awaitingPendingSave: false
+    // Qt holds a shortcut back while a dialog or the font picker is up, but
+    // the native menu bar matches its keys before Qt sees them, so its
+    // commands are switched off instead.
+    readonly property bool commandsEnabled: !unsavedChangesDialog.visible
+        && !externalChangeDialog.visible && !shortcutsDialog.visible
+        && !fontPicker.visible
 
     Material.theme: darkMode ? Material.Dark : Material.Light
     Material.accent: backend.themeAccent
@@ -140,123 +146,272 @@ ApplicationWindow {
         editor.forceActiveFocus();
     }
 
-    Shortcut {
-        sequence: "Ctrl+S"
-        onActivated: backend.save()
-    }
-
-    Shortcut {
-        // Cmd+H belongs to macOS, which hides the app with it.
-        sequence: "Ctrl+Alt+F"
-        onActivated: {
-            searchOpen = true;
+    function openSearch(withReplace) {
+        searchOpen = true;
+        if (withReplace)
             replaceOpen = true;
-            searchField.forceActiveFocus();
-            searchField.selectAll();
+        searchField.forceActiveFocus();
+        searchField.selectAll();
+    }
+
+    // The Edit menu works on the field being typed in, as it does anywhere
+    // on the Mac: the find and replace fields keep their own text and undo.
+    function editTarget() {
+        var item = win.activeFocusItem;
+        return item === searchField || item === replaceField ? item : editor;
+    }
+
+    function pasteIntoEditTarget() {
+        var target = editTarget();
+        if (target === editor)
+            editor.pasteFromClipboard();
+        else
+            target.paste();
+    }
+
+    // Every command is in the menu bar, which macOS draws at the top of the
+    // screen, and each key sequence belongs to its menu item alone: Qt finds
+    // a sequence registered twice ambiguous and runs neither.
+    menuBar: MenuBar {
+        objectName: "menuBar"
+
+        Menu {
+            title: "File"
+
+            Action {
+                text: "New Window"
+                shortcut: "Ctrl+N"
+                enabled: win.commandsEnabled
+                onTriggered: backend.newWindow()
+            }
+
+            Action {
+                text: "Open…"
+                shortcut: "Ctrl+O"
+                enabled: win.commandsEnabled
+                onTriggered: backend.openDialog()
+            }
+
+            MenuSeparator {}
+
+            Action {
+                text: "Save"
+                shortcut: "Ctrl+S"
+                enabled: win.commandsEnabled
+                onTriggered: backend.save()
+            }
+
+            Action {
+                text: "Save As…"
+                shortcut: "Ctrl+Shift+S"
+                enabled: win.commandsEnabled
+                onTriggered: backend.saveAsDialog()
+            }
+
+            MenuSeparator {}
+
+            Action {
+                text: "Print…"
+                shortcut: "Ctrl+P"
+                enabled: win.commandsEnabled
+                onTriggered: backend.printDocument()
+            }
+
+            MenuSeparator {}
+
+            Action {
+                text: "Close Window"
+                shortcut: "Ctrl+W"
+                enabled: win.commandsEnabled
+                onTriggered: win.close()
+            }
         }
-    }
 
-    Shortcut {
-        sequence: "Ctrl+B"
-        context: Qt.WindowShortcut
-        onActivated: editor.wrapSelection("**")
-    }
+        Menu {
+            title: "Edit"
 
-    Shortcut {
-        sequence: "Ctrl+I"
-        context: Qt.WindowShortcut
-        onActivated: editor.wrapSelection("*")
-    }
+            Action {
+                text: "Undo"
+                shortcut: "Ctrl+Z"
+                enabled: win.commandsEnabled
+                onTriggered: win.editTarget().undo()
+            }
 
-    Shortcut {
-        sequence: "Ctrl+Shift+X"
-        context: Qt.WindowShortcut
-        onActivated: editor.wrapSelection("~~")
-    }
+            Action {
+                id: redoAction
+                text: "Redo"
+                shortcut: "Ctrl+Shift+Z"
+                enabled: win.commandsEnabled
+                onTriggered: win.editTarget().redo()
+            }
 
-    Shortcut {
-        sequence: "Ctrl+K"
-        context: Qt.WindowShortcut
-        onActivated: editor.insertLink()
-    }
+            MenuSeparator {}
 
-    Shortcut {
-        sequence: "Ctrl+?"
-        onActivated: shortcutsDialog.open()
+            Action {
+                text: "Cut"
+                shortcut: "Ctrl+X"
+                enabled: win.commandsEnabled
+                onTriggered: win.editTarget().cut()
+            }
+
+            Action {
+                text: "Copy"
+                shortcut: "Ctrl+C"
+                enabled: win.commandsEnabled
+                onTriggered: win.editTarget().copy()
+            }
+
+            Action {
+                text: "Paste"
+                shortcut: "Ctrl+V"
+                enabled: win.commandsEnabled
+                onTriggered: win.pasteIntoEditTarget()
+            }
+
+            Action {
+                text: "Select All"
+                shortcut: "Ctrl+A"
+                enabled: win.commandsEnabled
+                onTriggered: win.editTarget().selectAll()
+            }
+
+            Action {
+                text: "Copy as HTML"
+                shortcut: "Ctrl+Shift+C"
+                enabled: win.commandsEnabled
+                onTriggered: backend.copyAsHtml()
+            }
+
+            MenuSeparator {}
+
+            Action {
+                text: "Find"
+                shortcut: "Ctrl+F"
+                enabled: win.commandsEnabled
+                onTriggered: win.openSearch(false)
+            }
+
+            Action {
+                // Cmd+H belongs to macOS, which hides the app with it.
+                text: "Find and Replace"
+                shortcut: "Ctrl+Alt+F"
+                enabled: win.commandsEnabled
+                onTriggered: win.openSearch(true)
+            }
+
+            MenuSeparator {}
+
+            Action {
+                text: "Bold"
+                shortcut: "Ctrl+B"
+                enabled: win.commandsEnabled
+                onTriggered: editor.wrapSelection("**")
+            }
+
+            Action {
+                text: "Italic"
+                shortcut: "Ctrl+I"
+                enabled: win.commandsEnabled
+                onTriggered: editor.wrapSelection("*")
+            }
+
+            Action {
+                text: "Strikethrough"
+                shortcut: "Ctrl+Shift+X"
+                enabled: win.commandsEnabled
+                onTriggered: editor.wrapSelection("~~")
+            }
+
+            Action {
+                text: "Link"
+                shortcut: "Ctrl+K"
+                enabled: win.commandsEnabled
+                onTriggered: editor.insertLink()
+            }
+        }
+
+        Menu {
+            title: "View"
+
+            Action {
+                id: biggerAction
+                text: "Bigger"
+                shortcut: "Ctrl+="
+                enabled: win.commandsEnabled
+                onTriggered: backend.increaseTextSize()
+            }
+
+            Action {
+                text: "Smaller"
+                shortcut: "Ctrl+-"
+                enabled: win.commandsEnabled
+                onTriggered: backend.decreaseTextSize()
+            }
+
+            Action {
+                text: "Actual Size"
+                shortcut: "Ctrl+0"
+                enabled: win.commandsEnabled
+                onTriggered: backend.resetTextSize()
+            }
+
+            MenuSeparator {}
+
+            Action {
+                // macOS picks out menu items by their text, and takes one
+                // starting with "Exit" for Quit; the zero-width space ahead of
+                // it keeps this one in the View menu.
+                text: win.visibility === Window.FullScreen ? "​Exit Full Screen"
+                                                           : "Enter Full Screen"
+                // Cmd+Ctrl+F, as Qt spells Cmd as Ctrl and the Control key as Meta.
+                shortcut: "Ctrl+Meta+F"
+                enabled: win.commandsEnabled
+                onTriggered: win.toggleFullScreen()
+            }
+        }
+
+        Menu {
+            title: "Window"
+
+            Action {
+                text: "Minimize"
+                shortcut: "Ctrl+M"
+                onTriggered: win.showMinimized()
+            }
+
+            Action {
+                text: "Zoom"
+                onTriggered: {
+                    if (win.visibility === Window.Maximized)
+                        win.showNormal();
+                    else
+                        win.showMaximized();
+                }
+            }
+        }
+
+        Menu {
+            title: "Help"
+
+            Action {
+                text: "Keyboard Shortcuts"
+                shortcut: "Ctrl+?"
+                enabled: win.commandsEnabled
+                onTriggered: shortcutsDialog.open()
+            }
+        }
     }
 
     Shortcut {
         // Ctrl++ is a different shortcut to Qt, not a shifted Ctrl+=, and it is
         // the only one a layout that puts + on its own key can reach.
-        sequences: ["Ctrl+=", "Ctrl++"]
-        onActivated: backend.increaseTextSize()
+        sequence: "Ctrl++"
+        onActivated: biggerAction.trigger()
     }
 
     Shortcut {
-        sequence: "Ctrl+-"
-        onActivated: backend.decreaseTextSize()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+0"
-        onActivated: backend.resetTextSize()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+O"
-        onActivated: backend.openDialog()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+N"
-        onActivated: backend.newWindow()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+Shift+S"
-        onActivated: backend.saveAsDialog()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+P"
-        onActivated: backend.printDocument()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+Shift+C"
-        onActivated: backend.copyAsHtml()
-    }
-
-    Shortcut {
-        // Cmd+Ctrl+F, as Qt spells Cmd as Ctrl and the Control key as Meta.
-        sequence: "Ctrl+Meta+F"
-        onActivated: toggleFullScreen()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+W"
-        onActivated: win.close()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+Z"
-        context: Qt.WindowShortcut
-        onActivated: editor.undo()
-    }
-
-    Shortcut {
-        sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]
-        context: Qt.WindowShortcut
-        onActivated: editor.redo()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+F"
-        onActivated: {
-            searchOpen = true;
-            searchField.forceActiveFocus();
-            searchField.selectAll();
-        }
+        sequence: "Ctrl+Y"
+        onActivated: redoAction.trigger()
     }
 
     Shortcut {
@@ -765,6 +920,13 @@ ApplicationWindow {
                         replaceSelectionWith(pastedText);
                 }
 
+                // A URL pasted over selected text links that text; anything
+                // else goes in as plain text.
+                function pasteFromClipboard() {
+                    if (!pasteClipboardUrlAsMarkdownLink())
+                        pasteClipboardAsPlainText();
+                }
+
                 function skipHiddenForward(position) {
                     var pos = position;
                     var ranges = backend.hiddenRangesAt(pos);
@@ -869,8 +1031,7 @@ ApplicationWindow {
                         && (event.modifiers & Qt.ShiftModifier)
                         && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier));
                     if (pasteKey || shiftInsert) {
-                        if (!pasteClipboardUrlAsMarkdownLink())
-                            pasteClipboardAsPlainText();
+                        pasteFromClipboard();
                         event.accepted = true;
                         return;
                     }
