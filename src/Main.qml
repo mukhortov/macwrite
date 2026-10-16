@@ -1215,7 +1215,7 @@ ApplicationWindow {
             y: -height - 10
             width: win.scaledSize(320)
             maximumHeight: Math.min(win.scaledSize(440), win.height - 80)
-            fonts: backend.availableFonts
+            listFonts: function() { return backend.availableFonts(); }
             currentFont: backend.editorFont
             defaultFont: "IBM Plex Mono"
             darkMode: win.darkMode

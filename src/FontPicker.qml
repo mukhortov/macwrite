@@ -6,6 +6,9 @@ Popup {
     id: picker
 
     property var fonts: []
+    // Called for the fonts when the picker first opens, as listing every
+    // installed font is not free.
+    property var listFonts: function() { return []; }
     property string currentFont
     property string defaultFont
     property bool darkMode: true
@@ -48,6 +51,8 @@ Popup {
     Material.elevation: 8
 
     onAboutToShow: {
+        if (fonts.length === 0)
+            fonts = listFonts();
         filterField.text = "";
         fontList.currentIndex = Math.max(0, fonts.indexOf(currentFont));
         fontList.positionViewAtIndex(fontList.currentIndex, ListView.Center);

@@ -2,6 +2,7 @@ QT += core gui quick testlib
 CONFIG += testcase c++17
 CONFIG -= app_bundle
 include(../macos/deployment-target.pri)
+LIBS += -framework CoreText
 TEMPLATE = app
 TARGET = tst_write
 

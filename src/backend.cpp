@@ -1,5 +1,7 @@
 #include "backend.h"
 
+#include <CoreText/CoreText.h>
+
 #include <QClipboard>
 #include <QColor>
 #include <QDir>
@@ -14,6 +16,7 @@
 #include <QQuickTextDocument>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QJsonDocument>
@@ -790,17 +793,46 @@ void Backend::setEditorFont(const QString &family) {
     emit editorFontChanged();
 }
 
-QStringList Backend::availableFonts() const {
-    // Leave out icon, emoji, and other symbol fonts, along with anything that
-    // cannot set the Latin text the editor is written in.
-    QStringList families;
-    for (const QString &family : QFontDatabase::families(QFontDatabase::Latin)) {
-        if (QFontDatabase::isPrivateFamily(family)
-                || QFontDatabase::writingSystems(family).contains(QFontDatabase::Symbol))
-            continue;
-        families.append(family);
+// The families of the installed fonts that can set the Latin text the editor
+// is written in, read from the macOS font registry. Symbol, icon, and emoji
+// fonts list no English, nor do fonts for other scripts. Asking Qt for its
+// Latin families instead opens and parses every font file, and the parsed
+// fonts stay in memory, some 80 MB of it.
+static QStringList installedLatinFamilies() {
+    QSet<QString> families;
+    CTFontCollectionRef collection = CTFontCollectionCreateFromAvailableFonts(nullptr);
+    CFArrayRef descriptors = CTFontCollectionCreateMatchingFontDescriptors(collection);
+    CFRelease(collection);
+    if (!descriptors)
+        return {};
+
+    for (CFIndex index = 0; index < CFArrayGetCount(descriptors); ++index) {
+        const auto descriptor =
+            static_cast<CTFontDescriptorRef>(CFArrayGetValueAtIndex(descriptors, index));
+        const auto family = static_cast<CFStringRef>(
+            CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute));
+        const auto languages = static_cast<CFArrayRef>(
+            CTFontDescriptorCopyAttribute(descriptor, kCTFontLanguagesAttribute));
+        if (family && languages
+                && CFArrayContainsValue(languages, CFRangeMake(0, CFArrayGetCount(languages)),
+                                        CFSTR("en"))) {
+            const QString name = QString::fromCFString(family);
+            // A leading dot marks a family macOS keeps for its own interface.
+            if (!name.startsWith(QLatin1Char('.')))
+                families.insert(name);
+        }
+        if (family)
+            CFRelease(family);
+        if (languages)
+            CFRelease(languages);
     }
-    return selectableFontFamilies(families);
+    CFRelease(descriptors);
+    return QStringList(families.cbegin(), families.cend());
+}
+
+QStringList Backend::availableFonts() const {
+    static const QStringList fonts = selectableFontFamilies(installedLatinFamilies());
+    return fonts;
 }
 
 QStringList Backend::selectableFontFamilies(const QStringList &families) {

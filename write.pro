@@ -13,6 +13,7 @@ DEFINES += WRITE_VERSION=\\\"$$VERSION\\\"
 QMAKE_INFO_PLIST = macos/Info.plist
 ICON = macos/write.icns
 include(macos/deployment-target.pri)
+LIBS += -framework CoreText
 
 HEADERS += \
     src/appeventfilter.h \

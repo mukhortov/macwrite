@@ -189,6 +189,24 @@ private slots:
                                      QStringLiteral("Noto Serif")}));
     }
 
+    void listsInstalledTextFontsOnce() {
+        const QStringList fonts = Backend().availableFonts();
+        QCOMPARE(fonts.value(0), Backend::defaultEditorFont());
+        // Every Mac has these.
+        QVERIFY(fonts.contains(QStringLiteral("Helvetica")));
+        QVERIFY(fonts.contains(QStringLiteral("Menlo")));
+        // Symbol and emoji fonts, and fonts for other scripts, stay out.
+        for (const QString &family : {QStringLiteral("Symbol"), QStringLiteral("Webdings"),
+                                      QStringLiteral("Zapf Dingbats"), QStringLiteral("Apple Color Emoji"),
+                                      QStringLiteral("Bodoni Ornaments"), QStringLiteral("Geeza Pro")})
+            QVERIFY2(!fonts.contains(family), qPrintable(family));
+        for (const QString &family : fonts)
+            QVERIFY2(!family.startsWith(QLatin1Char('.')), qPrintable(family));
+
+        // Another window shares the list rather than reading the fonts again.
+        QCOMPARE(Backend().availableFonts(), fonts);
+    }
+
     void remembersEditorFont() {
         const QString installed = Backend().availableFonts().value(1);
         QVERIFY(!installed.isEmpty());
@@ -780,11 +798,20 @@ private slots:
         auto *button = window->findChild<QQuickItem *>(QStringLiteral("fontButton"));
         QObject *picker = window->findChild<QObject *>(QStringLiteral("fontPicker"));
         QVERIFY(button && picker);
+        const auto pickerFonts = [picker]() {
+            QVariant fonts = picker->property("fonts");
+            if (fonts.metaType() == QMetaType::fromType<QJSValue>())
+                fonts = fonts.value<QJSValue>().toVariant();
+            return fonts.toStringList();
+        };
 
+        // The fonts are listed when the picker opens, not with every window.
+        QVERIFY(pickerFonts().isEmpty());
         const QPoint center = button->mapToScene(
             QPointF(button->width() / 2, button->height() / 2)).toPoint();
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center);
         QTRY_VERIFY(picker->property("opened").toBool());
+        QCOMPARE(pickerFonts(), backend.availableFonts());
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center);
         QTRY_VERIFY(!picker->property("visible").toBool());
     }
