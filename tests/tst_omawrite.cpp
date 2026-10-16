@@ -2454,8 +2454,11 @@ private slots:
         QDir::setCurrent(previous);
 
         // A recovery draft written later must not depend on the directory.
+        // The working directory comes back with symlinks resolved, as macOS
+        // keeps temporary files under /var, a link to /private/var.
         QCOMPARE(backend.fileUrl().toLocalFile(),
-                 QDir(directory.path()).absoluteFilePath(QStringLiteral("relative.md")));
+                 QDir(QFileInfo(directory.path()).canonicalFilePath())
+                     .absoluteFilePath(QStringLiteral("relative.md")));
     }
 
     void saysWhenARecoveredDraftKeepsAFileFromOpening() {

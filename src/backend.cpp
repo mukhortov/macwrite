@@ -455,6 +455,21 @@ void Backend::newWindow() {
         setStatus(QStringLiteral("Could not open a new window."));
 }
 
+// macOS hands files opened from Finder or `open` to the running app rather
+// than naming them on the command line. An untouched blank window takes the
+// file; anything else keeps its document and the file gets a window of its own.
+void Backend::openRequestedFile(const QUrl &url) {
+    if (m_fileUrl.isEmpty() && !m_modified && currentDocumentText().isEmpty()) {
+        openOrStartFile(url);
+        return;
+    }
+
+    const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                                 {url.toLocalFile()});
+    if (!started)
+        setStatus(QStringLiteral("Could not open %1.").arg(QFileInfo(url.toLocalFile()).fileName()));
+}
+
 void Backend::copyAsHtml() {
     QTextDocument rendered;
     rendered.setMarkdown(currentDocumentText());

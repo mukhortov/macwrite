@@ -13,7 +13,7 @@ else
   exit 1
 fi
 
-JOBS="$(nproc 2>/dev/null || echo 1)"
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
@@ -21,4 +21,11 @@ cd "$BUILD_DIR"
 "$QMAKE" "$ROOT/omawrite.pro"
 make -j"$JOBS"
 
-echo "Built $BUILD_DIR/omawrite"
+if [ "$(uname -s)" = "Darwin" ]; then
+  # The bundle loads Qt from where it is installed. Sign it ad hoc so the
+  # bundle's resources are sealed along with the binary the linker signed.
+  codesign --force --sign - Omawrite.app
+  echo "Built $BUILD_DIR/Omawrite.app"
+else
+  echo "Built $BUILD_DIR/omawrite"
+fi

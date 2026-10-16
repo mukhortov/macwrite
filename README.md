@@ -10,6 +10,10 @@ A dead-simple Markdown writing app built with Qt Quick and C++ that automaticall
 
 Install via the Omarchy Package Repository via the `omawrite` package. It's installed by default in new installations of Omarchy (from Quattro forward).
 
+On macOS, `brew install qt` and run `bin/build` to get `build/Omawrite.app`, which
+loads Qt from Homebrew. Drag it to Applications to open Markdown files from Finder.
+Shortcuts listed as `Ctrl` use `⌘` there.
+
 ## Command line
 
 `omawrite` opens an empty document and `omawrite FILE` opens a Markdown file.

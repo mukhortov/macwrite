@@ -1,6 +1,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QApplication>
+#include <QFileOpenEvent>
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -15,6 +16,26 @@
 #include "systemtheme.h"
 
 #define OMAWRITE_VERSION "0.7.0"
+
+namespace {
+// Files opened from Finder or `open` arrive as events, not arguments, on macOS.
+class FileOpenFilter : public QObject {
+public:
+    explicit FileOpenFilter(Backend *backend) : QObject(backend), m_backend(backend) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() != QEvent::FileOpen)
+            return QObject::eventFilter(watched, event);
+
+        m_backend->openRequestedFile(static_cast<QFileOpenEvent *>(event)->url());
+        return true;
+    }
+
+private:
+    Backend *m_backend;
+};
+}
 
 int main(int argc, char *argv[]) {
     // Answered before the application exists, so they need no display.
@@ -86,6 +107,7 @@ int main(int argc, char *argv[]) {
     const QStringList args = app.arguments();
     if (args.size() > 1)
         backend.openOrStartFile(QUrl::fromLocalFile(args.at(1)));
+    app.installEventFilter(new FileOpenFilter(&backend));
 
     return app.exec();
 }
