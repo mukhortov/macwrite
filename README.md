@@ -12,7 +12,10 @@ Install via the Omarchy Package Repository via the `omawrite` package. It's inst
 
 On macOS, `brew install qt` and run `bin/build` to get `build/Omawrite.app`, which
 loads Qt from Homebrew. Drag it to Applications to open Markdown files from Finder.
-Shortcuts listed as `Ctrl` use `⌘` there.
+Shortcuts listed as `Ctrl` use `⌘` there, with these exceptions that leave macOS's own
+keys alone: `⌥⌘F` opens find and replace, `⌃⌘F` toggles fullscreen, and the
+unsaved-changes dialog takes `⌘.` or `Esc` to cancel, `⌘D` to discard, and `Return` to save.
+`⌘W` closes the window, and `⌘Q` asks about unsaved changes before quitting.
 
 ## Command line
 

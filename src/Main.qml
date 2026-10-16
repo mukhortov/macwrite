@@ -43,6 +43,9 @@ ApplicationWindow {
     property string pendingAction: ""
     property bool replaceOpen: false
     property bool awaitingPendingSave: false
+    // macOS keeps ⌘H for hiding the app and ⌃F for moving the caret, so
+    // a few shortcuts follow its conventions there instead.
+    readonly property bool macOS: Qt.platform.os === "osx"
 
     Material.theme: darkMode ? Material.Dark : Material.Light
     Material.accent: backend.themeAccent
@@ -150,7 +153,7 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequence: "Ctrl+H"
+        sequence: win.macOS ? "Ctrl+Alt+F" : "Ctrl+H"
         onActivated: {
             searchOpen = true;
             replaceOpen = true;
@@ -231,8 +234,15 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequences: ["Meta+F", "F11"]
+        sequences: win.macOS ? ["Ctrl+Meta+F"] : ["Meta+F", "F11"]
         onActivated: toggleFullScreen()
+    }
+
+    // Elsewhere the window manager closes windows; macOS leaves Cmd+W to the app.
+    Shortcut {
+        sequence: "Ctrl+W"
+        enabled: win.macOS
+        onActivated: win.close()
     }
 
     Shortcut {
@@ -371,7 +381,31 @@ ApplicationWindow {
         // (Material Dialog.qml:14); as a child, the default content item sizes
         // to it without the feedback.
         Label {
-            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+Shift+X  Strikethrough\nCtrl+K  Link\nCtrl+Shift+C  Copy as HTML\nCtrl+P  Print\nCtrl+= / Ctrl+-  Text Size\nCtrl+0  Reset Text Size\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
+            objectName: "shortcutList"
+            // Each row is [other platforms, macOS, action]; an empty key leaves
+            // the row out on that platform.
+            readonly property var rows: [
+                ["Ctrl+S", "⌘S", "Save"],
+                ["Ctrl+Shift+S", "⇧⌘S", "Save As"],
+                ["Ctrl+O", "⌘O", "Open"],
+                ["Ctrl+N", "⌘N", "New Window"],
+                ["", "⌘W", "Close Window"],
+                ["Ctrl+F", "⌘F", "Find"],
+                ["Ctrl+H", "⌥⌘F", "Find and Replace"],
+                ["Ctrl+B", "⌘B", "Bold"],
+                ["Ctrl+I", "⌘I", "Italic"],
+                ["Ctrl+Shift+X", "⇧⌘X", "Strikethrough"],
+                ["Ctrl+K", "⌘K", "Link"],
+                ["Ctrl+Shift+C", "⇧⌘C", "Copy as HTML"],
+                ["Ctrl+P", "⌘P", "Print"],
+                ["Ctrl+= / Ctrl+-", "⌘= / ⌘-", "Text Size"],
+                ["Ctrl+0", "⌘0", "Reset Text Size"],
+                ["F11 / Super+F", "⌃⌘F", "Fullscreen"],
+                ["Ctrl+?", "⌘?", "Shortcuts"]
+            ]
+            readonly property int column: win.macOS ? 1 : 0
+            text: rows.filter(row => row[column] !== "")
+                .map(row => row[column] + "  " + row[2]).join("\n")
             lineHeight: 1.5
         }
     }

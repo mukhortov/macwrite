@@ -28,21 +28,25 @@ Dialog {
     y: Math.round((containerHeight - height) / 2)
     padding: 20
 
+    // macOS dialogs have no mnemonics: Cmd+. cancels as Escape does, Cmd+D
+    // discards, and Return takes the focused Save button.
+    readonly property bool macOS: Qt.platform.os === "osx"
+
     Shortcut {
-        sequence: "Alt+C"
+        sequence: root.macOS ? "Ctrl+." : "Alt+C"
         enabled: root.opened
         onActivated: cancelButton.clicked()
     }
 
     Shortcut {
-        sequence: "Alt+D"
+        sequence: root.macOS ? "Ctrl+D" : "Alt+D"
         enabled: root.opened
         onActivated: discardButton.clicked()
     }
 
     Shortcut {
         sequence: "Alt+S"
-        enabled: root.opened
+        enabled: root.opened && !root.macOS
         onActivated: saveButton.clicked()
     }
 
@@ -86,7 +90,7 @@ Dialog {
             SquareDialogButton {
                 id: cancelButton
                 text: "Cancel"
-                formattedText: "<u>C</u>ancel"
+                formattedText: root.macOS ? "" : "<u>C</u>ancel"
                 darkMode: root.darkMode
                 textScale: root.textScale
                 labelColor: root.textColor
@@ -100,7 +104,7 @@ Dialog {
             SquareDialogButton {
                 id: discardButton
                 text: "Discard"
-                formattedText: "<u>D</u>iscard"
+                formattedText: root.macOS ? "" : "<u>D</u>iscard"
                 darkMode: root.darkMode
                 textScale: root.textScale
                 labelColor: root.textColor
@@ -117,7 +121,7 @@ Dialog {
             SquareDialogButton {
                 id: saveButton
                 text: "Save"
-                formattedText: "<u>S</u>ave"
+                formattedText: root.macOS ? "" : "<u>S</u>ave"
                 primary: true
                 darkMode: root.darkMode
                 textScale: root.textScale

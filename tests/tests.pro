@@ -7,10 +7,12 @@ TARGET = tst_omawrite
 INCLUDEPATH += ../src
 SOURCES += \
     tst_omawrite.cpp \
+    ../src/appeventfilter.cpp \
     ../src/backend.cpp \
     ../src/cli.cpp \
     ../src/markdownhighlighter.cpp
 HEADERS += \
+    ../src/appeventfilter.h \
     ../src/backend.h \
     ../src/cli.h \
     ../src/markdownhighlighter.h

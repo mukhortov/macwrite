@@ -15,6 +15,7 @@
 #include <QMimeData>
 #include "cli.h"
 
+#include "appeventfilter.h"
 #include "backend.h"
 #include "markdownhighlighter.h"
 
@@ -41,6 +42,15 @@ private:
     static inline QtMessageHandler s_previous = nullptr;
     QtMessageHandler m_previous = nullptr;
 };
+
+// macOS keeps Cmd+H for hiding the app, so find and replace is Cmd+Option+F.
+static void pressFindAndReplace(QWindow *window) {
+#ifdef Q_OS_MACOS
+    QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier | Qt::AltModifier);
+#else
+    QTest::keyClick(window, Qt::Key_H, Qt::ControlModifier);
+#endif
+}
 
 class OmawriteTest : public QObject {
     Q_OBJECT
@@ -343,7 +353,7 @@ private slots:
         QVERIFY(editor && searchField && replaceField && replaceButton && replaceAllButton);
 
         editor->setProperty("text", QStringLiteral("foo foo foo"));
-        QTest::keyClick(window, Qt::Key_H, Qt::ControlModifier);
+        pressFindAndReplace(window);
         searchField->setProperty("text", QStringLiteral("foo"));
         replaceField->setProperty("text", QStringLiteral("Foo"));
 
@@ -382,14 +392,14 @@ private slots:
         QObject *replaceField = window->findChild<QObject *>(QStringLiteral("replaceField"));
         QVERIFY(editor && replaceField);
 
-        QTest::keyClick(window, Qt::Key_H, Qt::ControlModifier);
+        pressFindAndReplace(window);
         QTest::keyClick(window, Qt::Key_Tab);
         QTRY_VERIFY(replaceField->property("activeFocus").toBool());
         QTest::keyClick(window, Qt::Key_Escape);
         QVERIFY(!window->property("searchOpen").toBool());
 
         // Escape closes the bar from the Replace field itself too.
-        QTest::keyClick(window, Qt::Key_H, Qt::ControlModifier);
+        pressFindAndReplace(window);
         QMetaObject::invokeMethod(replaceField, "forceActiveFocus");
         QTest::keyClick(window, Qt::Key_Escape);
         QVERIFY(!window->property("searchOpen").toBool());
@@ -422,6 +432,44 @@ private slots:
         QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
         QVERIFY(!window->property("searchOpen").toBool());
         QMetaObject::invokeMethod(dialog, "close");
+    }
+
+    void followsThePlatformForClashingShortcuts() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> object(component.create());
+        auto *window = qobject_cast<QQuickWindow *>(object.data());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QObject *shortcutList = window->findChild<QObject *>(QStringLiteral("shortcutList"));
+        QVERIFY(shortcutList);
+        const QString help = shortcutList->property("text").toString();
+
+#ifdef Q_OS_MACOS
+        QVERIFY(help.contains(QStringLiteral("⌥⌘F  Find and Replace")));
+        QVERIFY(help.contains(QStringLiteral("⌘W  Close Window")));
+        QVERIFY(!help.contains(QStringLiteral("Ctrl")));
+
+        // ⌘H hides the app and ⌃F moves the caret, so neither may be taken.
+        QTest::keyClick(window, Qt::Key_H, Qt::ControlModifier);
+        QVERIFY(!window->property("searchOpen").toBool());
+        QTest::keyClick(window, Qt::Key_F, Qt::MetaModifier);
+        QCOMPARE(window->visibility(), QWindow::Windowed);
+        QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier | Qt::MetaModifier);
+#else
+        QVERIFY(help.contains(QStringLiteral("Ctrl+H  Find and Replace")));
+        QVERIFY(!help.contains(QStringLiteral("Close Window")));
+
+        QTest::keyClick(window, Qt::Key_F, Qt::MetaModifier);
+#endif
+        QTRY_COMPARE(window->visibility(), QWindow::FullScreen);
     }
 
     void togglesTheFontPickerFromItsButton() {
@@ -1904,7 +1952,7 @@ private slots:
         QCOMPARE(caret(), 6);
     }
 
-    void unsavedChangesDialogSupportsAltMnemonics() {
+    void unsavedChangesDialogAnswersToItsKeys() {
         const QString dialogQmlPath = QFINDTESTDATA("../src/UnsavedChangesDialog.qml");
         QVERIFY(!dialogQmlPath.isEmpty());
 
@@ -1943,6 +1991,18 @@ private slots:
         QSignalSpy discardSpy(dialog, SIGNAL(discardRequested()));
         QSignalSpy saveSpy(dialog, SIGNAL(saveRequested()));
 
+        // macOS dialogs have no mnemonics: Cmd+. cancels, Cmd+D discards, and
+        // Return takes the Save button the dialog opens focused on.
+#ifdef Q_OS_MACOS
+        const auto cancel = [window] { QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier); };
+        const auto discard = [window] { QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier); };
+        const auto save = [window] { QTest::keyClick(window, Qt::Key_Return); };
+#else
+        const auto cancel = [window] { QTest::keyClick(window, Qt::Key_C, Qt::AltModifier); };
+        const auto discard = [window] { QTest::keyClick(window, Qt::Key_D, Qt::AltModifier); };
+        const auto save = [window] { QTest::keyClick(window, Qt::Key_S, Qt::AltModifier); };
+#endif
+
         // Bare letters and Ctrl chords do nothing, so a stray keypress
         // while typing can never discard work.
         QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
@@ -1956,26 +2016,26 @@ private slots:
         QCOMPARE(saveSpy.count(), 0);
         QVERIFY(dialog->property("opened").toBool());
 
-        QTest::keyClick(window, Qt::Key_C, Qt::AltModifier);
+        cancel();
         QTRY_COMPARE(cancelSpy.count(), 1);
         QVERIFY(!dialog->property("opened").toBool());
 
         QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
         QTRY_VERIFY(dialog->property("opened").toBool());
-        QTest::keyClick(window, Qt::Key_D, Qt::AltModifier);
+        discard();
         QTRY_COMPARE(discardSpy.count(), 1);
         QVERIFY(!dialog->property("opened").toBool());
 
         QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
         QTRY_VERIFY(dialog->property("opened").toBool());
-        QTest::keyClick(window, Qt::Key_S, Qt::AltModifier);
+        save();
         QTRY_COMPARE(saveSpy.count(), 1);
         QVERIFY(!dialog->property("opened").toBool());
 
-        // With the dialog closed, the mnemonics are inert.
-        QTest::keyClick(window, Qt::Key_C, Qt::AltModifier);
-        QTest::keyClick(window, Qt::Key_D, Qt::AltModifier);
-        QTest::keyClick(window, Qt::Key_S, Qt::AltModifier);
+        // With the dialog closed, its keys are inert.
+        cancel();
+        discard();
+        save();
         QCOMPARE(cancelSpy.count(), 1);
         QCOMPARE(discardSpy.count(), 1);
         QCOMPARE(saveSpy.count(), 1);
@@ -2503,6 +2563,47 @@ private slots:
         // A later save, such as an auto-save, must not close the window.
         QCOMPARE(window->property("pendingAction").toString(), QString());
         QVERIFY(!window->property("awaitingPendingSave").toBool());
+    }
+
+    void asksAboutUnsavedChangesBeforeClosingOrQuitting() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> object(component.create());
+        auto *window = qobject_cast<QQuickWindow *>(object.data());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QObject *dialog = window->findChild<QObject *>(QStringLiteral("unsavedChangesDialog"));
+        QVERIFY(editor && dialog);
+        editor->setProperty("text", QStringLiteral("unsaved"));
+        QVERIFY(backend.modified());
+
+#ifdef Q_OS_MACOS
+        QTest::keyClick(window, Qt::Key_W, Qt::ControlModifier);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(window->isVisible());
+        QMetaObject::invokeMethod(dialog, "reject");
+        QTRY_VERIFY(!dialog->property("opened").toBool());
+#endif
+
+        // Quitting from the macOS app menu, as Cmd+Q does, sends the
+        // application a Quit event; the window must get to ask first.
+        AppEventFilter appEvents(&backend, window);
+        QCoreApplication::instance()->installEventFilter(&appEvents);
+        QEvent quit(QEvent::Quit);
+        QCoreApplication::sendEvent(QCoreApplication::instance(), &quit);
+        QVERIFY(!quit.isAccepted());
+        QVERIFY(window->isVisible());
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QMetaObject::invokeMethod(dialog, "reject");
+        backend.discardRecovery();
     }
 
     void savesInAFolderItCannotWriteNewFilesIn() {

@@ -14,6 +14,7 @@ macx {
 }
 
 HEADERS += \
+    src/appeventfilter.h \
     src/backend.h \
     src/cli.h \
     src/markdownhighlighter.h \
@@ -21,6 +22,7 @@ HEADERS += \
 
 SOURCES += \
     src/main.cpp \
+    src/appeventfilter.cpp \
     src/backend.cpp \
     src/cli.cpp \
     src/markdownhighlighter.cpp \
