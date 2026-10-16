@@ -1,21 +1,20 @@
 #pragma once
 
 #include <QObject>
-#include <QPointer>
 
-class Backend;
-class QWindow;
+class WindowManager;
 
 // Answers what the platform asks of the whole application rather than of one
-// window: macOS opens files from Finder and quits from Cmd+Q this way.
+// window: macOS opens files from Finder, quits from Cmd+Q, and reopens from
+// the Dock this way.
 class AppEventFilter : public QObject {
 public:
-    AppEventFilter(Backend *backend, QWindow *window, QObject *parent = nullptr);
+    explicit AppEventFilter(WindowManager *windows, QObject *parent = nullptr);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-    Backend *m_backend;
-    QPointer<QWindow> m_window;
+    WindowManager *m_windows;
+    bool m_active;
 };

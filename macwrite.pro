@@ -18,7 +18,8 @@ HEADERS += \
     src/backend.h \
     src/cli.h \
     src/markdownhighlighter.h \
-    src/systemtheme.h
+    src/systemtheme.h \
+    src/windowmanager.h
 
 SOURCES += \
     src/main.cpp \
@@ -26,6 +27,7 @@ SOURCES += \
     src/backend.cpp \
     src/cli.cpp \
     src/markdownhighlighter.cpp \
-    src/systemtheme.cpp
+    src/systemtheme.cpp \
+    src/windowmanager.cpp
 
 RESOURCES += src/resources.qrc

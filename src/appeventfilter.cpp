@@ -1,27 +1,44 @@
 #include "appeventfilter.h"
 
 #include <QFileOpenEvent>
-#include <QWindow>
+#include <QGuiApplication>
 
-#include "backend.h"
+#include "windowmanager.h"
 
-AppEventFilter::AppEventFilter(Backend *backend, QWindow *window, QObject *parent)
-    : QObject(parent), m_backend(backend), m_window(window) {}
+AppEventFilter::AppEventFilter(WindowManager *windows, QObject *parent)
+    : QObject(parent), m_windows(windows),
+      m_active(QGuiApplication::applicationState() == Qt::ApplicationActive) {}
 
 bool AppEventFilter::eventFilter(QObject *watched, QEvent *event) {
+    if (watched != QCoreApplication::instance())
+        return QObject::eventFilter(watched, event);
+
     switch (event->type()) {
     case QEvent::FileOpen:
         // Files opened from Finder or `open` arrive as events, not arguments.
-        m_backend->openRequestedFile(static_cast<QFileOpenEvent *>(event)->url());
+        m_windows->openFile(static_cast<QFileOpenEvent *>(event)->url());
         return true;
     case QEvent::Quit:
         // QApplication closes only widget windows before it quits, so ask the
-        // Macwrite window here. A window that stays open has unsaved changes
+        // Macwrite windows here. A window that stays open has unsaved changes
         // to ask about, and the quit waits for the answer.
-        if (m_window && m_window->isVisible() && !m_window->close()) {
+        if (!m_windows->closeAllWindows()) {
             event->ignore();
             return true;
         }
+        break;
+    case QEvent::ApplicationDeactivate:
+        m_active = false;
+        break;
+    case QEvent::ApplicationActivate:
+        // Qt reports a click on the Dock icon as one more activation, sent
+        // even while Macwrite is active. From another app, macOS activates
+        // Macwrite before it reports the click, so the click is always the
+        // activation of an app already active. Switching to Macwrite, as with
+        // Cmd+Tab, is the first one alone and opens nothing.
+        if (m_active)
+            m_windows->reopen();
+        m_active = true;
         break;
     default:
         break;

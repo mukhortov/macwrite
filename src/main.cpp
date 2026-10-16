@@ -2,18 +2,17 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QApplication>
-#include <QQmlApplicationEngine>
-#include <QQmlContext>
+#include <QQmlEngine>
 #include <QQmlError>
 #include <QQuickStyle>
 #include <QUrl>
-#include <QWindow>
 #include <QFile>
 
 #include "appeventfilter.h"
 #include "backend.h"
 #include "cli.h"
 #include "systemtheme.h"
+#include "windowmanager.h"
 
 int main(int argc, char *argv[]) {
     // Answered before the application exists, so they need no display.
@@ -39,11 +38,8 @@ int main(int argc, char *argv[]) {
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
 
-    Backend backend(&app);
-    SystemTheme systemTheme(&app);
-    backend.setDarkMode(systemTheme.darkMode());
-    QObject::connect(&systemTheme, &SystemTheme::darkModeChanged, &backend,
-                     &Backend::setDarkMode);
+    // A Mac app keeps running with every window closed, until it is quit.
+    app.setQuitOnLastWindowClosed(false);
 
     // Carry the text scale into the default font, so the chrome that inherits
     // it (dialog titles, buttons) grows along with the writing area.
@@ -56,35 +52,34 @@ int main(int argc, char *argv[]) {
         scaled.setPointSizeF(basePointSize * textScale);
         app.setFont(scaled);
     };
+    applyInterfaceFont(Backend::storedTextScale());
 
-    applyInterfaceFont(backend.textScale());
-    QObject::connect(&backend, &Backend::textScaleChanged, &app,
-                     [&backend, applyInterfaceFont]() {
-        applyInterfaceFont(backend.textScale());
-    });
-
-    QQmlApplicationEngine engine;
-    QObject::connect(&engine, &QQmlApplicationEngine::warnings, &app,
+    QQmlEngine engine;
+    QObject::connect(&engine, &QQmlEngine::warnings, &app,
                      [](const QList<QQmlError> &warnings) {
         for (const QQmlError &warning : warnings)
             qWarning().noquote() << warning.toString();
     });
-    engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
 
-    engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
-    if (engine.rootObjects().isEmpty()) {
+    WindowManager windows(&engine, QUrl(QStringLiteral("qrc:/Main.qml")));
+    QObject::connect(&windows, &WindowManager::textScaleChanged, &app, applyInterfaceFont);
+
+    SystemTheme systemTheme(&app);
+    windows.setDarkMode(systemTheme.darkMode());
+    QObject::connect(&systemTheme, &SystemTheme::darkModeChanged, &windows,
+                     &WindowManager::setDarkMode);
+
+    windows.openStartupWindows();
+    if (windows.windows().isEmpty()) {
         qCritical() << "Could not load the Macwrite interface; resource available:"
                     << QFile::exists(QStringLiteral(":/Main.qml"));
         return -1;
     }
 
-    auto *window = qobject_cast<QWindow *>(engine.rootObjects().constFirst());
-    backend.setParentWindow(window);
-
     const QStringList args = app.arguments();
     if (args.size() > 1)
-        backend.openOrStartFile(QUrl::fromLocalFile(args.at(1)));
-    AppEventFilter appEvents(&backend, window);
+        windows.openFile(QUrl::fromLocalFile(args.at(1)));
+    AppEventFilter appEvents(&windows);
     app.installEventFilter(&appEvents);
 
     return app.exec();

@@ -7,7 +7,7 @@ QString Cli::usage() {
         "Usage: macwrite [FILE]\n"
         "\n"
         "Opens FILE, a Markdown file, or an empty document without one. Macwrite\n"
-        "is a graphical app and keeps running until its window is closed.\n"
+        "is a graphical app and keeps running until it is quit.\n"
         "\n"
         "Options:\n"
         "  -h, --help     Show this message and exit\n"

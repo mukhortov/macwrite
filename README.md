@@ -21,9 +21,12 @@ bin/install
 ## Opening files
 
 Open Markdown files from Finder with Open With → Macwrite, or from Terminal with
-`open -a Macwrite notes.md`. A file opened while a window already holds a
-document gets a window of its own, and each window runs as its own copy of the
-app, with its own Dock icon.
+`open -a Macwrite notes.md`. An untouched blank window takes the file, a file
+that is already open comes forward in its window, and any other file gets a
+window of its own. Every window runs in the one app, behind one Dock icon.
+
+Closing the last window leaves Macwrite running, as Mac apps do; click its Dock
+icon for a new window.
 
 `Macwrite.app/Contents/MacOS/Macwrite FILE` opens a file too, even one that does
 not exist yet, which the first save creates. `--help` and `--version` answer in
@@ -50,12 +53,15 @@ Every command is also in the menu bar, under File, Edit, View, Window, and Help.
 - In the unsaved-changes dialog, `⌘.` or `Esc` cancels, `⌘D` discards, and
   `Return` saves.
 
-`⌘Q` asks about unsaved changes before quitting.
+`⌘Q` asks about unsaved changes in every window before quitting, the front
+window first. Cancelling any of those questions cancels the quit, and no window
+closes until every question is answered.
 
 Once a document has been saved to a file, edits are auto-saved to that file a
 moment after you stop typing, so `⌘S` is rarely needed. Untitled drafts are
 never auto-saved — they wait for an explicit save so Macwrite never picks a file
-name for you. Unsaved drafts are recovered after an abnormal exit. Macwrite also
+name for you. Unsaved drafts are recovered after an abnormal exit, each in a
+window of its own. Macwrite also
 watches open files and warns before an external change can replace local work;
 auto-save pauses until you reload, keep your version, or save. A recovered draft
 is never auto-saved over its file — save it to keep it.
@@ -63,8 +69,11 @@ is never auto-saved over its file — save it to keep it.
 The font button in the footer picks the writing font from any installed text font,
 and Macwrite remembers the choice. IBM Plex Mono is the default.
 
-The text size runs from 67% to 200% in browser-sized steps and is remembered for
-the next window you open.
+The text size runs from 67% to 200% in browser-sized steps. Like the font, it is
+one setting for every window, and is remembered for the next launch.
+
+A new window opens a step down and to the right of the front window. The last
+window to close sets where the first window opens at the next launch.
 
 ## License
 
