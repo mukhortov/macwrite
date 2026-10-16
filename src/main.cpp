@@ -17,23 +17,26 @@
 int main(int argc, char *argv[]) {
     // Answered before the application exists, so they need no display.
     if (const std::optional<int> exitCode =
-            Cli::handleArguments(argc, argv, QStringLiteral(MACWRITE_VERSION)))
+            Cli::handleArguments(argc, argv, QStringLiteral(WRITE_VERSION)))
         return *exitCode;
 
     // AppKit adds an Enter Full Screen item of its own to a menu called View,
-    // which would sit beside the one Macwrite's View menu already has.
+    // which would sit beside the one Write's View menu already has.
     CFPreferencesSetAppValue(CFSTR("NSFullScreenMenuItemEverywhere"), kCFBooleanFalse,
                              kCFPreferencesCurrentApplication);
 
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("macwrite"));
-    app.setApplicationVersion(QStringLiteral(MACWRITE_VERSION));
+    app.setApplicationName(QStringLiteral("write"));
+    app.setApplicationVersion(QStringLiteral(WRITE_VERSION));
 
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Regular.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Italic.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Bold.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-BoldItalic.ttf"));
-    // Settings land in the bundle's own preferences, com.mukhortov.macwrite.
+    // Settings land in the bundle's own preferences, com.mukhortov.write, and
+    // drafts under Application Support/mukhortov/write, clear of any other
+    // app called Write.
+    app.setOrganizationName(QStringLiteral("mukhortov"));
     app.setOrganizationDomain(QStringLiteral("mukhortov.com"));
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
@@ -71,7 +74,7 @@ int main(int argc, char *argv[]) {
 
     windows.openStartupWindows();
     if (windows.windows().isEmpty()) {
-        qCritical() << "Could not load the Macwrite interface; resource available:"
+        qCritical() << "Could not load the Write interface; resource available:"
                     << QFile::exists(QStringLiteral(":/Main.qml"));
         return -1;
     }

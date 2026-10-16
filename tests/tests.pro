@@ -1,12 +1,13 @@
 QT += core gui quick testlib
 CONFIG += testcase c++17
 CONFIG -= app_bundle
+include(../macos/deployment-target.pri)
 TEMPLATE = app
-TARGET = tst_macwrite
+TARGET = tst_write
 
 INCLUDEPATH += ../src
 SOURCES += \
-    tst_macwrite.cpp \
+    tst_write.cpp \
     ../src/appeventfilter.cpp \
     ../src/backend.cpp \
     ../src/cli.cpp \

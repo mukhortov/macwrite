@@ -362,11 +362,11 @@ void Backend::discardRecovery() {
     suspendAutoSave();
 }
 
-// A file named on the command line need not exist yet: `macwrite new.md`
+// A file named on the command line need not exist yet: `Write new.md`
 // starts a blank document that the first save writes to that path. Opening
 // from the file picker or reloading still requires the file to be there.
 void Backend::openOrStartFile(const QUrl &requestedUrl) {
-    // A relative path names a file in the directory Macwrite was started
+    // A relative path names a file in the directory Write was started
     // from; a recovery draft must not resolve it against another one later.
     const QFileInfo info(requestedUrl.toLocalFile());
     const QUrl url = requestedUrl.isLocalFile()

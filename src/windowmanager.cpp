@@ -135,7 +135,7 @@ QQuickWindow *WindowManager::newWindow() {
     QObject *object = m_component.createWithInitialProperties(properties, context);
     auto *window = qobject_cast<QQuickWindow *>(object);
     if (!window) {
-        qCritical().noquote() << "Could not open a Macwrite window:" << m_component.errorString();
+        qCritical().noquote() << "Could not open a Write window:" << m_component.errorString();
         delete object;
         delete context;
         delete backend;

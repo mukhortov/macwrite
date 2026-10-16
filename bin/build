@@ -9,18 +9,18 @@ if command -v qmake6 >/dev/null 2>&1; then
 elif command -v qmake >/dev/null 2>&1; then
   QMAKE=qmake
 else
-  echo "Qt 6 is required to build Macwrite: brew install qt" >&2
+  echo "Qt 6 is required to build Write: brew install qt" >&2
   exit 1
 fi
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-"$QMAKE" "$ROOT/macwrite.pro"
+"$QMAKE" "$ROOT/write.pro"
 make -j"$(sysctl -n hw.ncpu)"
 
 # The bundle loads Qt from where Homebrew installed it. Sign it ad hoc so the
 # bundle's resources are sealed along with the binary the linker signed.
-codesign --force --sign - Macwrite.app
+codesign --force --sign - Write.app
 
-echo "Built $BUILD_DIR/Macwrite.app"
+echo "Built $BUILD_DIR/Write.app"

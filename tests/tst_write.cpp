@@ -86,7 +86,7 @@ static bool chooseFromMenu(QObject *window, const QString &text) {
         && QMetaObject::invokeMethod(command, "trigger");
 }
 
-class MacwriteTest : public QObject {
+class WriteTest : public QObject {
     Q_OBJECT
 
 private slots:
@@ -134,13 +134,13 @@ private slots:
 
     void answersHelpBeforeOpeningAWindow() {
         const QString usage = Cli::usage();
-        QVERIFY(usage.contains(QStringLiteral("macwrite [FILE]")));
+        QVERIFY(usage.contains(QStringLiteral("Write [FILE]")));
         QVERIFY(usage.contains(QStringLiteral("-h, --help")));
         QVERIFY(usage.contains(QStringLiteral("-v, --version")));
 
         const QString version = QStringLiteral("1.2.3");
         const auto answer = [&](const QStringList &arguments) {
-            return Cli::handleArguments(QStringList{QStringLiteral("macwrite")} + arguments,
+            return Cli::handleArguments(QStringList{QStringLiteral("Write")} + arguments,
                                         version);
         };
         QCOMPARE(answer({QStringLiteral("--help")}), std::optional<int>(0));
@@ -2911,7 +2911,7 @@ private slots:
             QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
         };
 
-        // The blank window Macwrite opened with takes the first file.
+        // The blank window Write opened with takes the first file.
         QQuickWindow *blank = windows.newWindow();
         QVERIFY(blank);
         openFromFinder(first);
@@ -2956,7 +2956,7 @@ private slots:
             QEvent event(type);
             QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
         };
-        // macOS activates Macwrite, if it was not already, and then Qt
+        // macOS activates Write, if it was not already, and then Qt
         // reports the click as one more activation.
         const auto clickDockIcon = [&send] {
             send(QEvent::ApplicationActivate);
@@ -2972,9 +2972,9 @@ private slots:
         clickDockIcon();
         QCOMPARE(windows.windows().size(), 1);
 
-        // Closing the last window leaves Macwrite running. Switching to it
+        // Closing the last window leaves Write running. Switching to it
         // shows no window, as in other Mac apps, but the Dock icon brings
-        // one back, whether Macwrite was in front or not.
+        // one back, whether Write was in front or not.
         QVERIFY(window->close());
         QVERIFY(windows.windows().isEmpty());
         switchFromAnotherApp();
@@ -3049,7 +3049,7 @@ private slots:
         // Drafts of its own, apart from any another test or test run left.
         const QString applicationName = QCoreApplication::applicationName();
         QCoreApplication::setApplicationName(
-            QStringLiteral("tst_macwrite-drafts-%1").arg(QCoreApplication::applicationPid()));
+            QStringLiteral("tst_write-drafts-%1").arg(QCoreApplication::applicationPid()));
         const QString stateDirectory =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         const auto restore = qScopeGuard([&] {
@@ -3080,7 +3080,7 @@ private slots:
                                      QStringLiteral("second draft")}));
         QCOMPARE(Backend::unclaimedRecoveryDrafts(), 0);
 
-        // Without drafts, Macwrite starts with one blank window.
+        // Without drafts, Write starts with one blank window.
         WindowManager fresh(&engine, mainQmlUrl());
         fresh.openStartupWindows();
         QCOMPARE(fresh.windows().size(), 1);
@@ -3249,7 +3249,7 @@ private slots:
         }
         QCOMPARE(readFile(path), QByteArray());
 
-        // The file moves on before Macwrite comes back.
+        // The file moves on before Write comes back.
         writeFile(path, "newer on disk");
 
         // Earlier tests may have left drafts of their own; claim until ours.
@@ -3442,5 +3442,5 @@ private:
     QTemporaryDir m_settingsDirectory;
 };
 
-QTEST_MAIN(MacwriteTest)
-#include "tst_macwrite.moc"
+QTEST_MAIN(WriteTest)
+#include "tst_write.moc"

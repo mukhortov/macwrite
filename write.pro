@@ -1,17 +1,18 @@
-!macx: error("Macwrite builds for macOS only.")
+!macx: error("Write builds for macOS only.")
 
 QT += core gui widgets printsupport qml quick quickcontrols2 quickdialogs2
 
 CONFIG += c++17 release
-TARGET = Macwrite
+TARGET = Write
 TEMPLATE = app
 
 # The one place the version lives: the app reports it and the bundle carries it.
 VERSION = 0.7.0
-DEFINES += MACWRITE_VERSION=\\\"$$VERSION\\\"
+DEFINES += WRITE_VERSION=\\\"$$VERSION\\\"
 
 QMAKE_INFO_PLIST = macos/Info.plist
-ICON = macos/macwrite.icns
+ICON = macos/write.icns
+include(macos/deployment-target.pri)
 
 HEADERS += \
     src/appeventfilter.h \

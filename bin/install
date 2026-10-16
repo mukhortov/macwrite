@@ -7,7 +7,7 @@ APPLICATIONS="${APPLICATIONS:-/Applications}"
 "$ROOT/bin/build"
 
 # Replace the whole bundle, so nothing from an older build lingers inside it.
-rm -rf "$APPLICATIONS/Macwrite.app"
-cp -R "$ROOT/build/Macwrite.app" "$APPLICATIONS/"
+rm -rf "$APPLICATIONS/Write.app"
+cp -R "$ROOT/build/Write.app" "$APPLICATIONS/"
 
-echo "Installed $APPLICATIONS/Macwrite.app"
+echo "Installed $APPLICATIONS/Write.app"

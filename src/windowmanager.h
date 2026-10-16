@@ -15,7 +15,7 @@ class QQmlContext;
 class QQmlEngine;
 class QQuickWindow;
 
-// Runs every Macwrite window in this one process. Each window has a Backend of
+// Runs every Write window in this one process. Each window has a Backend of
 // its own, with its document, file watcher, auto-save, and recovery slot,
 // while the text size and font are one preference all windows share.
 class WindowManager : public QObject {
@@ -57,7 +57,7 @@ private slots:
     void closeCancelled();
 
 private:
-    friend class MacwriteTest;
+    friend class WriteTest;
 
     // A window stays listed after it closes, until it is gone, so the manager
     // can still take it down along with its backend.

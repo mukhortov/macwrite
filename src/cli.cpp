@@ -4,9 +4,9 @@
 
 QString Cli::usage() {
     return QStringLiteral(
-        "Usage: macwrite [FILE]\n"
+        "Usage: Write [FILE]\n"
         "\n"
-        "Opens FILE, a Markdown file, or an empty document without one. Macwrite\n"
+        "Opens FILE, a Markdown file, or an empty document without one. Write\n"
         "is a graphical app and keeps running until it is quit.\n"
         "\n"
         "Options:\n"
@@ -24,7 +24,7 @@ std::optional<int> Cli::handleArguments(const QStringList &arguments, const QStr
         return 0;
     }
     if (first == QLatin1String("-v") || first == QLatin1String("--version")) {
-        QTextStream(stdout) << QStringLiteral("macwrite %1\n").arg(version);
+        QTextStream(stdout) << QStringLiteral("Write %1\n").arg(version);
         return 0;
     }
 

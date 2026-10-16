@@ -1,11 +1,11 @@
-# Macwrite
+# Write
 
 A macOS port of [Omawrite](https://github.com/omacom/omawrite), the dead-simple
-Markdown writing app built with Qt Quick and C++ for Omarchy Linux. Macwrite runs
+Markdown writing app built with Qt Quick and C++ for Omarchy Linux. Write runs
 as a native Mac app and follows the system's light and dark appearance.
 
 Omawrite itself is Linux-only and doesn't take macOS support, so report anything
-about Macwrite here rather than upstream.
+about Write here rather than upstream.
 
 ## Build and install
 
@@ -14,21 +14,21 @@ brew install qt
 bin/install
 ```
 
-`bin/install` builds `build/Macwrite.app` and copies it to `/Applications`; set
+`bin/install` builds `build/Write.app` and copies it to `/Applications`; set
 `APPLICATIONS` to install it somewhere else. `bin/build` only builds it, and
 `bin/test` runs the tests. The app loads Qt from Homebrew, so keep `qt` installed.
 
 ## Opening files
 
-Open Markdown files from Finder with Open With → Macwrite, or from Terminal with
-`open -a Macwrite notes.md`. An untouched blank window takes the file, a file
+Open Markdown files from Finder with Open With → Write, or from Terminal with
+`open -a Write notes.md`. An untouched blank window takes the file, a file
 that is already open comes forward in its window, and any other file gets a
 window of its own. Every window runs in the one app, behind one Dock icon.
 
-Closing the last window leaves Macwrite running, as Mac apps do; click its Dock
+Closing the last window leaves Write running, as Mac apps do; click its Dock
 icon for a new window.
 
-`Macwrite.app/Contents/MacOS/Macwrite FILE` opens a file too, even one that does
+`Write.app/Contents/MacOS/Write FILE` opens a file too, even one that does
 not exist yet, which the first save creates. `--help` and `--version` answer in
 the terminal without opening a window.
 
@@ -59,15 +59,15 @@ closes until every question is answered.
 
 Once a document has been saved to a file, edits are auto-saved to that file a
 moment after you stop typing, so `⌘S` is rarely needed. Untitled drafts are
-never auto-saved — they wait for an explicit save so Macwrite never picks a file
+never auto-saved — they wait for an explicit save so the app never picks a file
 name for you. Unsaved drafts are recovered after an abnormal exit, each in a
-window of its own. Macwrite also
+window of its own. Write also
 watches open files and warns before an external change can replace local work;
 auto-save pauses until you reload, keep your version, or save. A recovered draft
 is never auto-saved over its file — save it to keep it.
 
 The font button in the footer picks the writing font from any installed text font,
-and Macwrite remembers the choice. IBM Plex Mono is the default.
+and Write remembers the choice. IBM Plex Mono is the default.
 
 The text size runs from 67% to 200% in browser-sized steps. Like the font, it is
 one setting for every window, and is remembered for the next launch.

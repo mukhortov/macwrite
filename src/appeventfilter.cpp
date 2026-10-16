@@ -20,7 +20,7 @@ bool AppEventFilter::eventFilter(QObject *watched, QEvent *event) {
         return true;
     case QEvent::Quit:
         // QApplication closes only widget windows before it quits, so ask the
-        // Macwrite windows here. A window that stays open has unsaved changes
+        // Write windows here. A window that stays open has unsaved changes
         // to ask about, and the quit waits for the answer.
         if (!m_windows->closeAllWindows()) {
             event->ignore();
@@ -32,9 +32,9 @@ bool AppEventFilter::eventFilter(QObject *watched, QEvent *event) {
         break;
     case QEvent::ApplicationActivate:
         // Qt reports a click on the Dock icon as one more activation, sent
-        // even while Macwrite is active. From another app, macOS activates
-        // Macwrite before it reports the click, so the click is always the
-        // activation of an app already active. Switching to Macwrite, as with
+        // even while Write is active. From another app, macOS activates
+        // Write before it reports the click, so the click is always the
+        // activation of an app already active. Switching to Write, as with
         // Cmd+Tab, is the first one alone and opens nothing.
         if (m_active)
             m_windows->reopen();

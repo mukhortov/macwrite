@@ -124,7 +124,7 @@ signals:
     void newWindowRequested();
 
 private:
-    friend class MacwriteTest;
+    friend class WriteTest;
 
     void loadDocumentText(const QString &text);
     qreal steppedTextZoom(int direction) const;
