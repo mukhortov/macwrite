@@ -39,6 +39,13 @@ ApplicationWindow {
     property string pendingAction: ""
     property bool replaceOpen: false
     property bool awaitingPendingSave: false
+    // Where the window opens. The window manager steps a new window out from
+    // the front one; the first opens where the last one closed.
+    property var initialGeometry: backend.windowGeometry()
+
+    // A close the writer was asked about is off, and with it any quit that
+    // was waiting on this window.
+    signal closeCancelled()
 
     Material.theme: darkMode ? Material.Dark : Material.Light
     Material.accent: backend.themeAccent
@@ -73,6 +80,14 @@ ApplicationWindow {
         } else if (action === "open") {
             backend.open(pendingOpenUrl);
         }
+    }
+
+    function cancelPendingAction() {
+        var action = pendingAction;
+        pendingAction = "";
+        awaitingPendingSave = false;
+        if (action === "close")
+            closeCancelled();
     }
 
     FontMetrics {
@@ -289,8 +304,7 @@ ApplicationWindow {
         function onSaveFailed() {
             // A failed save leaves the document as it was, so the close or
             // open it was for is off; a later save must not carry it out.
-            win.awaitingPendingSave = false;
-            win.pendingAction = "";
+            win.cancelPendingAction();
         }
 
         function onExternalChangeDetected(deleted, locallyModified) {
@@ -314,10 +328,7 @@ ApplicationWindow {
         fileMode: Dialogs.FileDialog.SaveFile
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
         onAccepted: backend.saveAs(selectedFile)
-        onRejected: {
-            win.awaitingPendingSave = false;
-            win.pendingAction = "";
-        }
+        onRejected: win.cancelPendingAction()
     }
 
     UnsavedChangesDialog {
@@ -346,7 +357,7 @@ ApplicationWindow {
             win.awaitingPendingSave = true;
             backend.save();
         }
-        onCancelRequested: win.pendingAction = ""
+        onCancelRequested: win.cancelPendingAction()
     }
 
     ExternalChangeDialog {
@@ -1242,14 +1253,12 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
-        var geometry = backend.windowGeometry();
+        var geometry = initialGeometry;
         if (geometry.x >= 0) x = geometry.x;
         if (geometry.y >= 0) y = geometry.y;
         width = geometry.width;
         height = geometry.height;
         if (geometry.maximized) showMaximized();
     }
-
-    Component.onDestruction: backend.saveWindowGeometry(x, y, width, height, visibility === Window.Maximized)
 
 }

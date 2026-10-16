@@ -2,7 +2,6 @@
 
 #include <QClipboard>
 #include <QColor>
-#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -10,7 +9,6 @@
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QMimeData>
-#include <QProcess>
 #include <QPrintDialog>
 #include <QPrinter>
 #include <QQuickTextDocument>
@@ -118,29 +116,29 @@ QString Backend::normalizedLinkUrl(const QString &clipboardText) {
     return url.toString();
 }
 
+// Each window keeps its draft in a numbered slot, held by a lock while the
+// window is open.
+static QString recoverySlotBase(int slot) {
+    const QString stateDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return QDir(stateDirectory).filePath(QStringLiteral("recovery-%1").arg(slot));
+}
+
+constexpr int recoverySlotCount = 100;
+
 Backend::Backend(QObject *parent) : QObject(parent) {
-    // A settings file truncated by a crash reads back as an empty value, and
-    // both that and a NaN would clamp to the smallest size rather than fall
-    // back to the default.
-    bool zoomOk = false;
-    const qreal storedZoom = QSettings().value(textZoomSetting, 1.0).toDouble(&zoomOk);
-    m_textZoom = zoomOk && storedZoom > 0 ? qBound(textZoomSteps[0], storedZoom,
-                                                   textZoomSteps[textZoomStepCount - 1])
-                                          : 1.0;
+    m_textZoom = storedTextScale();
 
     const QString savedFont = QSettings().value(editorFontSetting).toString();
     m_editorFont = !savedFont.isEmpty() && QFontDatabase::hasFamily(savedFont)
         ? savedFont
         : defaultEditorFont();
 
-    const QString stateDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(stateDirectory);
+    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
     // Claim an orphaned snapshot before taking an empty slot. This ensures a
     // crash in window 2 is still recovered even if window 1 exited normally.
     for (int pass = 0; pass < 2 && !m_recoveryLock; ++pass) {
-        for (int slot = 0; slot < 100; ++slot) {
-            const QString base = QDir(stateDirectory).filePath(
-                QStringLiteral("recovery-%1").arg(slot));
+        for (int slot = 0; slot < recoverySlotCount; ++slot) {
+            const QString base = recoverySlotBase(slot);
             const bool snapshotExists = QFileInfo::exists(base + QStringLiteral(".json"));
             if ((pass == 0) != snapshotExists)
                 continue;
@@ -178,6 +176,30 @@ Backend::Backend(QObject *parent) : QObject(parent) {
 }
 
 Backend::~Backend() = default;
+
+// A settings file truncated by a crash reads back as an empty value, and both
+// that and a NaN would clamp to the smallest size rather than fall back to the
+// default.
+qreal Backend::storedTextScale() {
+    bool zoomOk = false;
+    const qreal storedZoom = QSettings().value(textZoomSetting, 1.0).toDouble(&zoomOk);
+    return zoomOk && storedZoom > 0 ? qBound(textZoomSteps[0], storedZoom,
+                                             textZoomSteps[textZoomStepCount - 1])
+                                    : 1.0;
+}
+
+int Backend::unclaimedRecoveryDrafts() {
+    int drafts = 0;
+    for (int slot = 0; slot < recoverySlotCount; ++slot) {
+        const QString base = recoverySlotBase(slot);
+        if (!QFileInfo::exists(base + QStringLiteral(".json")))
+            continue;
+        QLockFile lock(base + QStringLiteral(".lock"));
+        if (lock.tryLock())
+            ++drafts;
+    }
+    return drafts;
+}
 
 void Backend::setParentWindow(QWindow *window) {
     m_parentWindow = window;
@@ -234,11 +256,15 @@ void Backend::setTextZoom(qreal zoom) {
     // Report the size even when the ladder has run out, so a keypress that
     // changes nothing still says why.
     setStatus(QStringLiteral("Text size %1%").arg(qRound(zoom * 100)));
-    if (qFuzzyCompare(m_textZoom, zoom))
+    setTextScale(zoom);
+}
+
+void Backend::setTextScale(qreal scale) {
+    if (qFuzzyCompare(m_textZoom, scale))
         return;
 
-    m_textZoom = zoom;
-    QSettings().setValue(textZoomSetting, zoom);
+    m_textZoom = scale;
+    QSettings().setValue(textZoomSetting, scale);
     emit textScaleChanged();
 }
 
@@ -430,26 +456,13 @@ void Backend::printDocument() {
     }
 }
 
+// The window manager opens it, as windows belong to the whole app.
 void Backend::newWindow() {
-    const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                                                 QStringList());
-    if (!started)
-        setStatus(QStringLiteral("Could not open a new window."));
+    emit newWindowRequested();
 }
 
-// macOS hands files opened from Finder or `open` to the running app rather
-// than naming them on the command line. An untouched blank window takes the
-// file; anything else keeps its document and the file gets a window of its own.
-void Backend::openRequestedFile(const QUrl &url) {
-    if (m_fileUrl.isEmpty() && !m_modified && currentDocumentText().isEmpty()) {
-        openOrStartFile(url);
-        return;
-    }
-
-    const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                                                 {url.toLocalFile()});
-    if (!started)
-        setStatus(QStringLiteral("Could not open %1.").arg(QFileInfo(url.toLocalFile()).fileName()));
+bool Backend::isUntouched() const {
+    return m_fileUrl.isEmpty() && !m_modified && currentDocumentText().isEmpty();
 }
 
 void Backend::copyAsHtml() {

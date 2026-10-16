@@ -49,6 +49,10 @@ public:
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool darkMode);
     qreal textScale() const { return m_textZoom; }
+    // Every window shares the text size and the font, so another window's
+    // change arrives here as well.
+    void setTextScale(qreal scale);
+    static qreal storedTextScale();
     QString themeBackground() const { return m_themeBackground; }
     QString themeForeground() const { return m_themeForeground; }
     QString themeAccent() const { return m_themeAccent; }
@@ -69,7 +73,12 @@ public:
     Q_INVOKABLE void openDialog();
     Q_INVOKABLE void open(const QUrl &url);
     void openOrStartFile(const QUrl &url);
-    void openRequestedFile(const QUrl &url);
+    // A blank window nobody has written in, which a file opened from Finder
+    // may take over.
+    bool isUntouched() const;
+    // Drafts left by windows that did not close, such as after a crash, that
+    // no window has taken yet.
+    static int unclaimedRecoveryDrafts();
     Q_INVOKABLE void save();
     Q_INVOKABLE void saveAsDialog();
     Q_INVOKABLE void saveAs(const QUrl &url);
@@ -95,7 +104,7 @@ public:
     Q_INVOKABLE void replaceRange(int start, int end, const QString &text);
     Q_INVOKABLE bool insideFence(int position) const;
     Q_INVOKABLE QVariantMap windowGeometry() const;
-    Q_INVOKABLE void saveWindowGeometry(int x, int y, int width, int height, bool maximized);
+    void saveWindowGeometry(int x, int y, int width, int height, bool maximized);
     Q_INVOKABLE void documentFontChanged();
 
 signals:
@@ -112,6 +121,7 @@ signals:
     void saveDialogRequested(const QUrl &suggestedUrl);
     void saveSucceeded();
     void externalChangeDetected(bool deleted, bool locallyModified);
+    void newWindowRequested();
 
 private:
     friend class MacwriteTest;
