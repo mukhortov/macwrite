@@ -55,10 +55,10 @@ Dialog {
         Label {
             width: parent.width
             text: root.deleted
-                ? "This file was removed outside Omawrite. Keep your text as an unsaved document?"
+                ? "This file was removed outside Macwrite. Keep your text as an unsaved document?"
                 : (root.locallyModified
-                   ? "This file changed outside Omawrite. Reloading will discard your changes."
-                   : "This file changed outside Omawrite.")
+                   ? "This file changed outside Macwrite. Reloading will discard your changes."
+                   : "This file changed outside Macwrite.")
             color: root.textColor
             wrapMode: Text.Wrap
             font.family: "IBM Plex Mono"

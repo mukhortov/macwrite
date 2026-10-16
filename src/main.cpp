@@ -1,7 +1,6 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QApplication>
-#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlError>
@@ -15,26 +14,22 @@
 #include "cli.h"
 #include "systemtheme.h"
 
-#define OMAWRITE_VERSION "0.7.0"
-
 int main(int argc, char *argv[]) {
     // Answered before the application exists, so they need no display.
     if (const std::optional<int> exitCode =
-            Cli::handleArguments(argc, argv, QStringLiteral(OMAWRITE_VERSION)))
+            Cli::handleArguments(argc, argv, QStringLiteral(MACWRITE_VERSION)))
         return *exitCode;
 
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("omawrite"));
-    app.setApplicationVersion(QStringLiteral(OMAWRITE_VERSION));
-    app.setDesktopFileName(QStringLiteral("omawrite"));
-    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawrite")));
+    app.setApplicationName(QStringLiteral("macwrite"));
+    app.setApplicationVersion(QStringLiteral(MACWRITE_VERSION));
 
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Regular.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Italic.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Bold.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-BoldItalic.ttf"));
-    app.setOrganizationName(QStringLiteral("Omacom"));
-    app.setOrganizationDomain(QStringLiteral("omacom.io"));
+    // Settings land in the bundle's own preferences, com.mukhortov.macwrite.
+    app.setOrganizationDomain(QStringLiteral("mukhortov.com"));
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
 
@@ -56,12 +51,7 @@ int main(int argc, char *argv[]) {
         app.setFont(scaled);
     };
 
-    // The desktop sets the baseline; the backend folds the user's own text
-    // size into it and reports the total.
-    backend.setDesktopTextScale(systemTheme.textScale());
     applyInterfaceFont(backend.textScale());
-    QObject::connect(&systemTheme, &SystemTheme::textScaleChanged, &backend,
-                     &Backend::setDesktopTextScale);
     QObject::connect(&backend, &Backend::textScaleChanged, &app,
                      [&backend, applyInterfaceFont]() {
         applyInterfaceFont(backend.textScale());
@@ -77,7 +67,7 @@ int main(int argc, char *argv[]) {
 
     engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
-        qCritical() << "Could not load the Omawrite interface; resource available:"
+        qCritical() << "Could not load the Macwrite interface; resource available:"
                     << QFile::exists(QStringLiteral(":/Main.qml"));
         return -1;
     }

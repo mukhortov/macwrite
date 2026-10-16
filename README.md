@@ -1,67 +1,72 @@
-# Omawrite
+# Macwrite
 
-A dead-simple Markdown writing app built with Qt Quick and C++ that automatically follows system dark/light mode.
+A macOS port of [Omawrite](https://github.com/omacom/omawrite), the dead-simple
+Markdown writing app built with Qt Quick and C++ for Omarchy Linux. Macwrite runs
+as a native Mac app and follows the system's light and dark appearance.
 
-<img width="2948" height="3227" alt="screenshot-2026-06-23_15-24-08" src="https://github.com/user-attachments/assets/4e930c0d-edda-4046-b444-a59eff523329" />
-<img width="2948" height="3227" alt="screenshot-2026-06-23_15-23-23" src="https://github.com/user-attachments/assets/8ced7c26-961b-4ded-b263-84403001a951" />
+Omawrite itself is Linux-only and doesn't take macOS support, so report anything
+about Macwrite here rather than upstream.
 
+## Build and install
 
-## Install
+```sh
+brew install qt
+bin/install
+```
 
-Install via the Omarchy Package Repository via the `omawrite` package. It's installed by default in new installations of Omarchy (from Quattro forward).
+`bin/install` builds `build/Macwrite.app` and copies it to `/Applications`; set
+`APPLICATIONS` to install it somewhere else. `bin/build` only builds it, and
+`bin/test` runs the tests. The app loads Qt from Homebrew, so keep `qt` installed.
 
-On macOS, `brew install qt` and run `bin/build` to get `build/Omawrite.app`, which
-loads Qt from Homebrew. Drag it to Applications to open Markdown files from Finder.
-Shortcuts listed as `Ctrl` use `⌘` there, with these exceptions that leave macOS's own
-keys alone: `⌥⌘F` opens find and replace, `⌃⌘F` toggles fullscreen, and the
-unsaved-changes dialog takes `⌘.` or `Esc` to cancel, `⌘D` to discard, and `Return` to save.
-`⌘W` closes the window, and `⌘Q` asks about unsaved changes before quitting.
+## Opening files
 
-## Command line
+Open Markdown files from Finder with Open With → Macwrite, or from Terminal with
+`open -a Macwrite notes.md`. A file opened while a window already holds a
+document gets a window of its own, and each window runs as its own copy of the
+app, with its own Dock icon.
 
-`omawrite` opens an empty document and `omawrite FILE` opens a Markdown file.
-`omawrite --help` and `omawrite --version` answer in the terminal without opening a window.
+`Macwrite.app/Contents/MacOS/Macwrite FILE` opens a file too, even one that does
+not exist yet, which the first save creates. `--help` and `--version` answer in
+the terminal without opening a window.
 
 ## Shortcuts
 
-- `Ctrl+S` saves. Unsaved documents use the XDG desktop portal file picker.
-- `Ctrl+Shift+S` saves as.
-- `Ctrl+O` opens a Markdown file through the portal picker.
-- `Ctrl+P` opens the system print dialog.
-- `Ctrl+N` opens a new Omawrite window.
-- `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
-- `Super+F` toggles fullscreen. Qt maps this key as `Meta+F`.
-- `Ctrl+F` searches the document. Use `Enter` or `Ctrl+G` for the next match and `Shift+Enter` for the previous match.
-- `Ctrl+H` opens find and replace.
-- `Ctrl+B`, `Ctrl+I`, and `Ctrl+Shift+X` toggle bold, italic, and strikethrough Markdown. `Ctrl+K` inserts a link.
-- `Ctrl+=` and `Ctrl+-` change the text size, `Ctrl+0` returns to the default.
-  `Ctrl+scroll` does the same.
-- `Ctrl+Shift+C` copies the rendered document as HTML, with plain text as a fallback.
-- `Ctrl+?` shows the keyboard shortcut reference.
-- In the unsaved-changes dialog, `Alt+C`, `Alt+D`, and `Alt+S` choose Cancel,
-  Discard, and Save.
+- `⌘S` saves. Untitled documents ask where to save.
+- `⇧⌘S` saves as.
+- `⌘O` opens a Markdown file.
+- `⌘P` opens the print dialog.
+- `⌘N` opens a new window and `⌘W` closes it.
+- `⌘Z`, `⇧⌘Z`, and `⌘Y` handle undo and redo.
+- `⌃⌘F` toggles fullscreen.
+- `⌘F` searches the document. Use `Return` or `⌘G` for the next match and `⇧Return` for the previous match.
+- `⌥⌘F` opens find and replace.
+- `⌘B`, `⌘I`, and `⇧⌘X` toggle bold, italic, and strikethrough Markdown. `⌘K` inserts a link.
+- `⌘=` and `⌘-` change the text size, `⌘0` returns to the default.
+  `⌘-scroll` does the same.
+- `⇧⌘C` copies the rendered document as HTML, with plain text as a fallback.
+- `⌘?` shows the keyboard shortcut reference.
+- In the unsaved-changes dialog, `⌘.` or `Esc` cancels, `⌘D` discards, and
+  `Return` saves.
+
+`⌘Q` asks about unsaved changes before quitting.
 
 Once a document has been saved to a file, edits are auto-saved to that file a
-moment after you stop typing, so `Ctrl+S` is rarely needed. Untitled drafts are
-never auto-saved — they wait for an explicit save so Omawrite never picks a file
-name for you. Unsaved drafts are recovered after an abnormal exit. Omawrite also
+moment after you stop typing, so `⌘S` is rarely needed. Untitled drafts are
+never auto-saved — they wait for an explicit save so Macwrite never picks a file
+name for you. Unsaved drafts are recovered after an abnormal exit. Macwrite also
 watches open files and warns before an external change can replace local work;
 auto-save pauses until you reload, keep your version, or save. A recovered draft
 is never auto-saved over its file — save it to keep it.
 
 The font button in the footer picks the writing font from any installed text font,
-and Omawrite remembers the choice. IBM Plex Mono is the default.
+and Macwrite remembers the choice. IBM Plex Mono is the default.
 
-Text follows the desktop text size — `omarchy display text size`, or GNOME's
-`text-scaling-factor` — and re-flows without a restart. The default of 12px leaves
-Omawrite at the size it is designed around; larger and smaller sizes scale from there.
-`Ctrl+=`, `Ctrl+-`, and `Ctrl+scroll` set your own size on top of that, from 67% to
-200% in browser-sized steps. It is remembered for the next window you open.
+The text size runs from 67% to 200% in browser-sized steps and is remembered for
+the next window you open.
 
-## Requirements
+## License
 
-- Qt 6: `qt6-base`, `qt6-declarative`, `qt6-quickcontrols2`
-- `xdg-desktop-portal` and a portal backend
+MIT, like Omawrite, which is copyright David Heinemeier Hansson; see `LICENSE`.
 
 The IBM Plex Mono font is bundled under the SIL Open Font License 1.1; see
 `fonts/OFL.txt`. The font is copyright IBM Corp.

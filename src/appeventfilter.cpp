@@ -16,7 +16,7 @@ bool AppEventFilter::eventFilter(QObject *watched, QEvent *event) {
         return true;
     case QEvent::Quit:
         // QApplication closes only widget windows before it quits, so ask the
-        // Omawrite window here. A window that stays open has unsaved changes
+        // Macwrite window here. A window that stays open has unsaved changes
         // to ask about, and the quit waits for the answer.
         if (m_window && m_window->isVisible() && !m_window->close()) {
             event->ignore();

@@ -2,14 +2,12 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-PKGBUILD_DIR="$ROOT/pkgbuild"
-
-if ! command -v makepkg >/dev/null 2>&1; then
-  echo "makepkg is required to build and install the Arch package." >&2
-  exit 1
-fi
+APPLICATIONS="${APPLICATIONS:-/Applications}"
 
 "$ROOT/bin/build"
 
-cd "$PKGBUILD_DIR"
-exec makepkg -fsi "$@"
+# Replace the whole bundle, so nothing from an older build lingers inside it.
+rm -rf "$APPLICATIONS/Macwrite.app"
+cp -R "$ROOT/build/Macwrite.app" "$APPLICATIONS/"
+
+echo "Installed $APPLICATIONS/Macwrite.app"

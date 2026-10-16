@@ -7,15 +7,15 @@
 	<key>CFBundleAllowMixedLocalizations</key>
 	<true/>
 	<key>CFBundleDisplayName</key>
-	<string>Omawrite</string>
+	<string>Macwrite</string>
 	<key>CFBundleName</key>
-	<string>Omawrite</string>
+	<string>Macwrite</string>
 	<key>CFBundleExecutable</key>
 	<string>${EXECUTABLE_NAME}</string>
 	<key>CFBundleIconFile</key>
 	<string>${ASSETCATALOG_COMPILER_APPICON_NAME}</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.omacom.omawrite</string>
+	<string>com.mukhortov.macwrite</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

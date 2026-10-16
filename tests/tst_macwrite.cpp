@@ -45,14 +45,10 @@ private:
 
 // macOS keeps Cmd+H for hiding the app, so find and replace is Cmd+Option+F.
 static void pressFindAndReplace(QWindow *window) {
-#ifdef Q_OS_MACOS
     QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier | Qt::AltModifier);
-#else
-    QTest::keyClick(window, Qt::Key_H, Qt::ControlModifier);
-#endif
 }
 
-class OmawriteTest : public QObject {
+class MacwriteTest : public QObject {
     Q_OBJECT
 
 private slots:
@@ -100,13 +96,13 @@ private slots:
 
     void answersHelpBeforeOpeningAWindow() {
         const QString usage = Cli::usage();
-        QVERIFY(usage.contains(QStringLiteral("omawrite [FILE]")));
+        QVERIFY(usage.contains(QStringLiteral("macwrite [FILE]")));
         QVERIFY(usage.contains(QStringLiteral("-h, --help")));
         QVERIFY(usage.contains(QStringLiteral("-v, --version")));
 
         const QString version = QStringLiteral("1.2.3");
         const auto answer = [&](const QStringList &arguments) {
-            return Cli::handleArguments(QStringList{QStringLiteral("omawrite")} + arguments,
+            return Cli::handleArguments(QStringList{QStringLiteral("macwrite")} + arguments,
                                         version);
         };
         QCOMPARE(answer({QStringLiteral("--help")}), std::optional<int>(0));
@@ -434,7 +430,7 @@ private slots:
         QMetaObject::invokeMethod(dialog, "close");
     }
 
-    void followsThePlatformForClashingShortcuts() {
+    void leavesMacSystemShortcutsAlone() {
         const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
         QVERIFY(!mainQmlPath.isEmpty());
 
@@ -452,7 +448,6 @@ private slots:
         QVERIFY(shortcutList);
         const QString help = shortcutList->property("text").toString();
 
-#ifdef Q_OS_MACOS
         QVERIFY(help.contains(QStringLiteral("⌥⌘F  Find and Replace")));
         QVERIFY(help.contains(QStringLiteral("⌘W  Close Window")));
         QVERIFY(!help.contains(QStringLiteral("Ctrl")));
@@ -463,12 +458,6 @@ private slots:
         QTest::keyClick(window, Qt::Key_F, Qt::MetaModifier);
         QCOMPARE(window->visibility(), QWindow::Windowed);
         QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier | Qt::MetaModifier);
-#else
-        QVERIFY(help.contains(QStringLiteral("Ctrl+H  Find and Replace")));
-        QVERIFY(!help.contains(QStringLiteral("Close Window")));
-
-        QTest::keyClick(window, Qt::Key_F, Qt::MetaModifier);
-#endif
         QTRY_COMPARE(window->visibility(), QWindow::FullScreen);
     }
 
@@ -1026,69 +1015,6 @@ private slots:
         QCOMPARE(backend.hiddenRangesAt(document->findBlockByNumber(6).position()).size(), 2);
     }
 
-    void takesTheCodePanelFromTheTheme() {
-        QTemporaryDir homeDirectory;
-        QVERIFY(homeDirectory.isValid());
-
-        const QByteArray originalHome = qgetenv("HOME");
-        struct HomeRestorer {
-            QByteArray value;
-            ~HomeRestorer() { qputenv("HOME", value); }
-        } restoreHome{originalHome};
-        QVERIFY(qputenv("HOME", homeDirectory.path().toUtf8()));
-
-        const QString themeDirectory = homeDirectory.path()
-            + QStringLiteral("/.local/state/omarchy/current/theme");
-        QVERIFY(QDir().mkpath(themeDirectory));
-
-        Backend backend;
-        const auto codePanelFor = [&themeDirectory, &backend](const QByteArray &palette) {
-            QFile colorsFile(themeDirectory + QStringLiteral("/colors.toml"));
-            if (!colorsFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
-                return QColor();
-            colorsFile.write(palette);
-            colorsFile.close();
-            // Reload the same backend so a missing key cannot inherit the
-            // previous theme's panel color.
-            backend.setDarkMode(!backend.darkMode());
-            return QColor(backend.themeCodeBackground());
-        };
-
-        // The shade the theme names for panels wins.
-        QCOMPARE(codePanelFor("mode = \"dark\"\n"
-                              "background = \"#111c18\"\n"
-                              "foreground = \"#c1c497\"\n"
-                              "lighter_background = \"#23372b\"\n"),
-                 QColor(QStringLiteral("#23372b")));
-
-        // Themes naming none leave code on a shade mixed from the page: a
-        // little off the background, and nowhere near the text.
-        const QColor mixedDark = codePanelFor("mode = \"dark\"\n"
-                                              "background = \"#000000\"\n"
-                                              "foreground = \"#ffffff\"\n");
-        QVERIFY(mixedDark != QColor(Qt::black));
-        QVERIFY(mixedDark.lightness() < 60);
-
-        const QColor mixedLight = codePanelFor("mode = \"light\"\n"
-                                               "background = \"#ffffff\"\n"
-                                               "foreground = \"#000000\"\n");
-        QVERIFY(mixedLight != QColor(Qt::white));
-        QVERIFY(mixedLight.lightness() > 195);
-
-        QCOMPARE(codePanelFor("mode = \"light\"\n"
-                              "background = \"#ffffff\"\n"
-                              "foreground = \"#000000\"\n"
-                              "lighter_background = \"garbage\"\n"), mixedLight);
-
-        // A theme whose lighter background is the page itself would leave code
-        // with no panel at all, so it falls back to the mix as well.
-        QVERIFY(codePanelFor("mode = \"dark\"\n"
-                             "background = \"#0c0b0c\"\n"
-                             "foreground = \"#fafcfb\"\n"
-                             "lighter_background = \"#0c0b0c\"\n")
-                != QColor(QStringLiteral("#0c0b0c")));
-    }
-
     void rendersBoldItalicRuns() {
         const QString text = QStringLiteral("a ***word*** b");
         const auto markup = MarkdownHighlighter::inlineMarkup(text);
@@ -1184,17 +1110,54 @@ private slots:
     }
 
     void reportsThemeChangesOnlyWhenTheyHappen() {
-        ScopedTheme theme("mode = \"dark\"\nbackground = \"#111111\"\n");
-        QVERIFY(theme.ok);
         Backend backend;
+        QVERIFY(backend.darkMode());
         QSignalSpy colorsSpy(&backend, &Backend::themeColorsChanged);
         QSignalSpy modeSpy(&backend, &Backend::darkModeChanged);
 
-        // The theme names its mode, so the desktop's setting changes nothing.
-        backend.setDarkMode(false);
-        QVERIFY(backend.darkMode());
+        backend.setDarkMode(true);
         QCOMPARE(colorsSpy.count(), 0);
         QCOMPARE(modeSpy.count(), 0);
+
+        backend.setDarkMode(false);
+        QCOMPARE(colorsSpy.count(), 1);
+        QCOMPARE(modeSpy.count(), 1);
+    }
+
+    void followsTheSystemAppearance() {
+        Backend backend;
+        QCOMPARE(backend.themeBackground(), QStringLiteral("#101010"));
+        QCOMPARE(backend.themeForeground(), QStringLiteral("#eeeeee"));
+
+        // Code sits on a shade a little off the page, nowhere near the text.
+        const QColor darkPanel(backend.themeCodeBackground());
+        QVERIFY(darkPanel != QColor(backend.themeBackground()));
+        QVERIFY(darkPanel.lightness() < 60);
+
+        backend.setDarkMode(false);
+        QCOMPARE(backend.themeBackground(), QStringLiteral("#ffffff"));
+        QCOMPARE(backend.themeForeground(), QStringLiteral("#222324"));
+        QCOMPARE(backend.themeAccent(), QStringLiteral("#2077b2"));
+        const QColor lightPanel(backend.themeCodeBackground());
+        QVERIFY(lightPanel != QColor(Qt::white));
+        QVERIFY(lightPanel.lightness() > 195);
+
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        QCOMPARE(editor->property("selectionColor").value<QColor>(),
+                 QColor(backend.themeSelection()));
+        QCOMPARE(editor->property("selectedTextColor").value<QColor>(),
+                 QColor(backend.themeSelectionForeground()));
     }
 
     void ignoresInlineMarkdownInsideCodeSpans() {
@@ -1309,133 +1272,6 @@ private slots:
         QCOMPARE(mixed.size(), 2);
         QCOMPARE(mixed.at(0).kind, MarkdownHighlighter::InlineKind::Bold);
         QCOMPARE(mixed.at(1).kind, MarkdownHighlighter::InlineKind::Italic);
-    }
-
-    void loadsCurrentOmarchyTheme() {
-        ScopedTheme theme(
-            "mode = \"light\"\n"
-            "accent = \"#112233\"\n"
-            "selection = \"#445566\"\n"
-            "selection_foreground = \"#fafafa\"\n"
-            "background = \"#fefefe\"\n"
-            "foreground = \"#101010\"\n");
-        QVERIFY(theme.ok);
-
-        Backend backend;
-        QCOMPARE(backend.themeBackground(), QStringLiteral("#fefefe"));
-        QCOMPARE(backend.themeForeground(), QStringLiteral("#101010"));
-        QCOMPARE(backend.themeAccent(), QStringLiteral("#112233"));
-        QCOMPARE(backend.themeSelection(), QStringLiteral("#445566"));
-        QCOMPARE(backend.themeSelectionForeground(), QStringLiteral("#fafafa"));
-        QVERIFY(!backend.darkMode());
-
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        QCOMPARE(editor->property("selectionColor").value<QColor>(), QColor("#445566"));
-        QCOMPARE(editor->property("selectedTextColor").value<QColor>(), QColor("#fafafa"));
-    }
-
-    void fallsBackForSelectionColors_data() {
-        QTest::addColumn<QByteArray>("palette");
-        QTest::addColumn<QString>("selection");
-        QTest::addColumn<QString>("selectionForeground");
-
-        QTest::newRow("bright_foreground")
-            << QByteArray("foreground = \"#c0c0c0\"\n"
-                          "bright_foreground = \"#ffffff\"\n"
-                          "selection = \"#333333\"\n")
-            << QStringLiteral("#333333") << QStringLiteral("#ffffff");
-        QTest::newRow("foreground")
-            << QByteArray("foreground = \"#c0c0c0\"\n"
-                          "selection = \"#333333\"\n")
-            << QStringLiteral("#333333") << QStringLiteral("#c0c0c0");
-        QTest::newRow("selection_background")
-            << QByteArray("foreground = \"#c0c0c0\"\n"
-                          "selection_background = \"#222222\"\n")
-            << QStringLiteral("#222222") << QStringLiteral("#c0c0c0");
-    }
-
-    void fallsBackForSelectionColors() {
-        QFETCH(QByteArray, palette);
-        QFETCH(QString, selection);
-        QFETCH(QString, selectionForeground);
-
-        QTemporaryDir homeDirectory;
-        QVERIFY(homeDirectory.isValid());
-
-        const QByteArray originalHome = qgetenv("HOME");
-        struct HomeRestorer {
-            QByteArray value;
-            ~HomeRestorer() { qputenv("HOME", value); }
-        } restoreHome{originalHome};
-        QVERIFY(qputenv("HOME", homeDirectory.path().toUtf8()));
-
-        const QString themeDirectory = homeDirectory.path()
-            + QStringLiteral("/.local/state/omarchy/current/theme");
-        QVERIFY(QDir().mkpath(themeDirectory));
-
-        QFile colorsFile(themeDirectory + QStringLiteral("/colors.toml"));
-        QVERIFY(colorsFile.open(QIODevice::WriteOnly | QIODevice::Text));
-        QCOMPARE(colorsFile.write(palette), qint64(palette.size()));
-        colorsFile.close();
-
-        Backend backend;
-        QCOMPARE(backend.themeSelection(), selection);
-        QCOMPARE(backend.themeSelectionForeground(), selectionForeground);
-    }
-
-    void readsTomlValuesPastInlineComments() {
-        // Every colour in every theme is a quoted "#rrggbb": the hash inside the quotes stays.
-        QCOMPARE(Backend::tomlValue(QStringLiteral(" \"#1a1b26\" ")), QStringLiteral("#1a1b26"));
-        QCOMPARE(Backend::tomlValue(QStringLiteral("\"#EDE6D6\"   # unbleached cloth")),
-                 QStringLiteral("#EDE6D6"));
-        QCOMPARE(Backend::tomlValue(QStringLiteral("'#445566'# no space before the hash")),
-                 QStringLiteral("#445566"));
-        QCOMPARE(Backend::tomlValue(QStringLiteral("\"rebecca#purple\"")),
-                 QStringLiteral("rebecca#purple"));
-        QCOMPARE(Backend::tomlValue(QStringLiteral(" #1a1b26 ")), QStringLiteral("#1a1b26"));
-        QCOMPARE(Backend::tomlValue(QStringLiteral("\"#1a1b26")), QStringLiteral("\"#1a1b26"));
-        QCOMPARE(Backend::tomlValue(QStringLiteral("\"\"")), QString());
-        QCOMPARE(Backend::tomlValue(QString()), QString());
-    }
-
-    void keepsDefaultsForColorsItCannotParse() {
-        ScopedTheme theme(
-            "mode = \"dark\"          # warmed ink\r\n"
-            "accent = \"#112233\"     # shell-white pigment\r\n"
-            "selection = '#445566'\r\n"
-            "background = \"#1a1b17\" # ink, warmed\r\n"
-            "foreground = \"unbleached cloth\"\r\n");
-        QVERIFY(theme.ok);
-
-        Backend backend;
-        QCOMPARE(backend.themeBackground(), QStringLiteral("#1a1b17"));
-        QCOMPARE(backend.themeAccent(), QStringLiteral("#112233"));
-        QCOMPARE(backend.themeSelection(), QStringLiteral("#445566"));
-        QCOMPARE(backend.themeForeground(), QStringLiteral("#eeeeee"));
-        QVERIFY(backend.darkMode());
-    }
-
-    void takesItsDefaultsFromTheModeTheThemeAsksFor() {
-        ScopedTheme theme(
-            "mode = \"light\"\n"
-            "background = \"#ffffff\"\n"
-            "foreground = \"unbleached cloth\"\n");
-        QVERIFY(theme.ok);
-
-        Backend backend;
-        QVERIFY(!backend.darkMode());
-        QCOMPARE(backend.themeForeground(), QStringLiteral("#222324"));
     }
 
     void ignoresFileWatcherEventsForSavedContents() {
@@ -1991,19 +1827,13 @@ private slots:
         QSignalSpy discardSpy(dialog, SIGNAL(discardRequested()));
         QSignalSpy saveSpy(dialog, SIGNAL(saveRequested()));
 
-        // macOS dialogs have no mnemonics: Cmd+. cancels, Cmd+D discards, and
-        // Return takes the Save button the dialog opens focused on.
-#ifdef Q_OS_MACOS
+        // Cmd+. cancels, Cmd+D discards, and Return takes the Save button the
+        // dialog opens focused on.
         const auto cancel = [window] { QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier); };
         const auto discard = [window] { QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier); };
         const auto save = [window] { QTest::keyClick(window, Qt::Key_Return); };
-#else
-        const auto cancel = [window] { QTest::keyClick(window, Qt::Key_C, Qt::AltModifier); };
-        const auto discard = [window] { QTest::keyClick(window, Qt::Key_D, Qt::AltModifier); };
-        const auto save = [window] { QTest::keyClick(window, Qt::Key_S, Qt::AltModifier); };
-#endif
 
-        // Bare letters and Ctrl chords do nothing, so a stray keypress
+        // Bare letters and other Cmd chords do nothing, so a stray keypress
         // while typing can never discard work.
         QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
         QTRY_VERIFY(dialog->property("opened").toBool());
@@ -2041,7 +1871,7 @@ private slots:
         QCOMPARE(saveSpy.count(), 1);
     }
 
-    void scalesTextWithDesktopTextSize() {
+    void scalesTextWithTheTextSize() {
         const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
         QVERIFY(!mainQmlPath.isEmpty());
 
@@ -2057,33 +1887,33 @@ private slots:
         QVERIFY(editor);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 20);
 
-        // `omarchy display text size 16` sets the GNOME factor to 16/12.
-        backend.setDesktopTextScale(16.0 / 12.0);
-        QCOMPARE(window->property("editorFontPixelSize").toInt(), 27);
-        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 27);
+        backend.increaseTextSize();
+        QCOMPARE(window->property("editorFontPixelSize").toInt(), 22);
+        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 22);
 
-        backend.setDesktopTextScale(9.0 / 12.0);
-        QCOMPARE(window->property("editorFontPixelSize").toInt(), 15);
-        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 15);
+        backend.decreaseTextSize();
+        backend.decreaseTextSize();
+        QCOMPARE(window->property("editorFontPixelSize").toInt(), 18);
+        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 18);
+        backend.resetTextSize();
     }
 
-    void stepsTextSizeOnTopOfTheDesktopScale() {
+    void stepsTextSize() {
         Backend backend;
         QSignalSpy textScaleSpy(&backend, &Backend::textScaleChanged);
-        backend.setDesktopTextScale(1.5);
-        QCOMPARE(backend.textScale(), 1.5);
+        QCOMPARE(backend.textScale(), 1.0);
 
         backend.increaseTextSize();
-        QCOMPARE(backend.textScale(), 1.5 * 1.1);
+        QCOMPARE(backend.textScale(), 1.1);
         backend.decreaseTextSize();
         backend.decreaseTextSize();
-        QCOMPARE(backend.textScale(), 1.5 * 0.9);
+        QCOMPARE(backend.textScale(), 0.9);
         QCOMPARE(backend.status(), QStringLiteral("Text size 90%"));
 
         // The ends of the ladder hold instead of running away.
         for (int step = 0; step < 8; ++step)
             backend.decreaseTextSize();
-        QCOMPARE(backend.textScale(), 1.5 * 0.67);
+        QCOMPARE(backend.textScale(), 0.67);
         const int settledCount = textScaleSpy.count();
         backend.decreaseTextSize();
         QCOMPARE(textScaleSpy.count(), settledCount);
@@ -2093,7 +1923,7 @@ private slots:
         QCOMPARE(reopened.textScale(), 0.67);
 
         backend.resetTextSize();
-        QCOMPARE(backend.textScale(), 1.5);
+        QCOMPARE(backend.textScale(), 1.0);
         QCOMPARE(Backend().textScale(), 1.0);
     }
 
@@ -2120,7 +1950,7 @@ private slots:
         };
 
         // A touchpad trickles in pixels: a nudge is not a whole step yet. Its
-        // events carry a synthesized angleDelta as well, as Wayland sends them.
+        // events carry a synthesized angleDelta as well.
         scrollBy(240, 20);
         scrollBy(240, 20);
         QCOMPARE(backend.textScale(), 1.0);
@@ -2186,7 +2016,7 @@ private slots:
         QCOMPARE(window->property("width").toInt(), minimumWidth);
         QVERIFY(editor->property("x").toInt() > 0);
 
-        // A tiling compositor resizes below the minimum the window asks for.
+        // A window can still be set narrower than the minimum it asks for.
         window->setProperty("width", 394);
         QCoreApplication::processEvents();
         QCOMPARE(window->property("width").toInt(), 394);
@@ -2585,13 +2415,11 @@ private slots:
         editor->setProperty("text", QStringLiteral("unsaved"));
         QVERIFY(backend.modified());
 
-#ifdef Q_OS_MACOS
         QTest::keyClick(window, Qt::Key_W, Qt::ControlModifier);
         QTRY_VERIFY(dialog->property("opened").toBool());
         QVERIFY(window->isVisible());
         QMetaObject::invokeMethod(dialog, "reject");
         QTRY_VERIFY(!dialog->property("opened").toBool());
-#endif
 
         // Quitting from the macOS app menu, as Cmd+Q does, sends the
         // application a Quit event; the window must get to ask first.
@@ -2768,7 +2596,7 @@ private slots:
         }
         QCOMPARE(readFile(path), QByteArray());
 
-        // The file moves on before Omawrite comes back.
+        // The file moves on before Macwrite comes back.
         writeFile(path, "newer on disk");
 
         // Earlier tests may have left drafts of their own; claim until ours.
@@ -2889,24 +2717,6 @@ private:
         return formats;
     }
 
-    // Points HOME at a scratch tree holding one colors.toml, and puts it back on the way out.
-    struct ScopedTheme {
-        explicit ScopedTheme(const QByteArray &palette) {
-            const QString themeDirectory = home.path()
-                + QStringLiteral("/.local/state/omarchy/current/theme");
-            QFile colorsFile(themeDirectory + QStringLiteral("/colors.toml"));
-            ok = home.isValid() && QDir().mkpath(themeDirectory)
-                && qputenv("HOME", home.path().toUtf8())
-                && colorsFile.open(QIODevice::WriteOnly | QIODevice::Text)
-                && colorsFile.write(palette) == qint64(palette.size());
-        }
-        ~ScopedTheme() { qputenv("HOME", originalHome); }
-
-        QTemporaryDir home;
-        QByteArray originalHome = qgetenv("HOME");
-        bool ok = false;
-    };
-
     // Builds a minimal TextEdit and attaches its document to the backend, so
     // editorTextChanged() sees real edits. The engine outlives the returned
     // editor because it is a data member.
@@ -2975,5 +2785,5 @@ private:
     QTemporaryDir m_settingsDirectory;
 };
 
-QTEST_MAIN(OmawriteTest)
-#include "tst_omawrite.moc"
+QTEST_MAIN(MacwriteTest)
+#include "tst_macwrite.moc"

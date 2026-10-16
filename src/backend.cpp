@@ -27,7 +27,6 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
-#include <QTextStream>
 #include <QUrl>
 #include <QVariantMap>
 #include <QWindow>
@@ -175,20 +174,7 @@ Backend::Backend(QObject *parent) : QObject(parent) {
                     reportExternalChange(!QFileInfo::exists(path));
             });
 
-    loadOmarchyTheme();
-    watchOmarchyTheme();
-    // Switching themes touches several watched paths in a row, and the theme
-    // folder can be briefly missing, so reload once the burst has settled.
-    m_themeReloadTimer.setSingleShot(true);
-    m_themeReloadTimer.setInterval(100);
-    connect(&m_themeReloadTimer, &QTimer::timeout, this, [this]() {
-        loadOmarchyTheme();
-        watchOmarchyTheme();
-    });
-    connect(&m_themeWatcher, &QFileSystemWatcher::fileChanged, &m_themeReloadTimer,
-            qOverload<>(&QTimer::start));
-    connect(&m_themeWatcher, &QFileSystemWatcher::directoryChanged, &m_themeReloadTimer,
-            qOverload<>(&QTimer::start));
+    applyTheme();
 }
 
 Backend::~Backend() = default;
@@ -212,16 +198,12 @@ QString Backend::fileName() const {
 }
 
 void Backend::setDarkMode(bool darkMode) {
-    m_systemDarkMode = darkMode;
-    loadOmarchyTheme();
-}
-
-void Backend::setDesktopTextScale(qreal textScale) {
-    if (qFuzzyCompare(m_desktopTextScale, textScale))
+    if (m_darkMode == darkMode)
         return;
 
-    m_desktopTextScale = textScale;
-    emit textScaleChanged();
+    m_darkMode = darkMode;
+    applyTheme();
+    emit darkModeChanged();
 }
 
 void Backend::increaseTextSize() {
@@ -354,11 +336,11 @@ void Backend::discardRecovery() {
     suspendAutoSave();
 }
 
-// A file named on the command line need not exist yet: `omawrite new.md`
+// A file named on the command line need not exist yet: `macwrite new.md`
 // starts a blank document that the first save writes to that path. Opening
 // from the file picker or reloading still requires the file to be there.
 void Backend::openOrStartFile(const QUrl &requestedUrl) {
-    // A relative path names a file in the directory Omawrite was started
+    // A relative path names a file in the directory Macwrite was started
     // from; a recovery draft must not resolve it against another one later.
     const QFileInfo info(requestedUrl.toLocalFile());
     const QUrl url = requestedUrl.isLocalFile()
@@ -1067,151 +1049,31 @@ void Backend::watchCurrentFile() {
         m_fileWatcher.addPath(m_fileUrl.toLocalFile());
 }
 
-// A quoted TOML value ends at its closing quote; whatever trails it is an inline comment.
-QString Backend::tomlValue(const QString &text) {
-    const QString value = text.trimmed();
-    if (value.isEmpty())
-        return value;
-
-    const QChar quote = value.front();
-    if (quote != QLatin1Char('"') && quote != QLatin1Char('\''))
-        return value;
-
-    const int close = value.indexOf(quote, 1);
-    return close < 0 ? value : value.mid(1, close - 1);
-}
-
-void Backend::loadOmarchyTheme() {
-    const QString colorsPath = QDir::homePath()
-        + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml");
-    QString themeMode;
-    QString background;
-    QString foreground;
-    QString accent;
-    QString selection;
-    QString selectionBackground;
-    QString selectionForeground;
-    QString brightForeground;
-    QString lighterBackground;
-    QFile file(colorsPath);
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream in(&file);
-        while (!in.atEnd()) {
-            const QString line = in.readLine().trimmed();
-            if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
-                continue;
-
-            const int equals = line.indexOf(QLatin1Char('='));
-            if (equals < 0)
-                continue;
-
-            const QString key = line.left(equals).trimmed();
-            const QString value = tomlValue(line.mid(equals + 1));
-
-            if (key == QStringLiteral("mode"))
-                themeMode = value;
-            else if (key == QStringLiteral("background"))
-                background = value;
-            else if (key == QStringLiteral("foreground"))
-                foreground = value;
-            else if (key == QStringLiteral("accent"))
-                accent = value;
-            else if (key == QStringLiteral("selection"))
-                selection = value;
-            else if (key == QStringLiteral("selection_background"))
-                selectionBackground = value;
-            else if (key == QStringLiteral("selection_foreground"))
-                selectionForeground = value;
-            else if (key == QStringLiteral("bright_foreground"))
-                brightForeground = value;
-            else if (key == QStringLiteral("lighter_background"))
-                lighterBackground = value;
-        }
-    }
-
-    const bool wasDark = m_darkMode;
+// The colours follow the system appearance, light or dark.
+void Backend::applyTheme() {
     const QStringList previousColors{m_themeBackground, m_themeForeground, m_themeAccent,
                                      m_themeSelection, m_themeSelectionForeground,
                                      m_themeCodeBackground};
 
-    bool themeIsDark = m_systemDarkMode;
-    if (themeMode == QStringLiteral("dark")) {
-        themeIsDark = true;
-    } else if (themeMode == QStringLiteral("light")) {
-        themeIsDark = false;
-    } else {
-        const QColor parsedBackground(background);
-        if (parsedBackground.isValid()) {
-            const double luminance = 0.299 * parsedBackground.redF()
-                + 0.587 * parsedBackground.greenF() + 0.114 * parsedBackground.blueF();
-            themeIsDark = luminance < 0.5;
-        }
-    }
-    m_darkMode = themeIsDark;
-
-    // The defaults follow the mode the theme resolved to, so a colour we cannot
-    // read costs that one colour rather than the contrast of the whole editor.
     m_themeBackground = m_darkMode ? QStringLiteral("#101010") : QStringLiteral("#ffffff");
     m_themeForeground = m_darkMode ? QStringLiteral("#eeeeee") : QStringLiteral("#222324");
     m_themeAccent = m_darkMode ? QStringLiteral("#5584aa") : QStringLiteral("#2077b2");
     m_themeSelection = m_darkMode ? QStringLiteral("#186a9a") : QStringLiteral("#2077b2");
-
-    // An unparseable colour reaches QML as black, so keep the default instead.
-    // Later calls win, so each fallback is applied before what it falls back from.
-    const auto applyColor = [](QString &target, const QString &value) {
-        if (QColor(value).isValid())
-            target = value;
-    };
-    applyColor(m_themeBackground, background);
-    applyColor(m_themeForeground, foreground);
-    applyColor(m_themeAccent, accent);
-    applyColor(m_themeSelection, selectionBackground);
-    applyColor(m_themeSelection, selection);
     m_themeSelectionForeground = m_themeForeground;
-    applyColor(m_themeSelectionForeground, brightForeground);
-    applyColor(m_themeSelectionForeground, selectionForeground);
-
-    // Omarchy themes name a lighter background for panels like the one code
-    // sits on, so use the shade the theme chose. Not every theme sets the key,
-    // and a few set it to the page background, which would leave code with no
-    // panel at all: mix a shade of the page towards the text for those. Mixing,
+    // Code sits on a panel a shade of the page towards the text. Mixing,
     // unlike lightening, still moves on a pure black background.
-    const QColor page(m_themeBackground);
-    const QColor lighter(lighterBackground);
-    m_themeCodeBackground = (lighter.isValid() && lighter != page
-                                 ? lighter
-                                 : blend(page, QColor(m_themeForeground), 0.06)).name();
+    m_themeCodeBackground = blend(QColor(m_themeBackground), QColor(m_themeForeground), 0.06).name();
 
     if (m_highlighter) {
         m_highlighter->setTheme(m_darkMode, m_themeBackground, m_themeForeground,
                                 m_themeAccent, m_themeCodeBackground);
     }
 
-    if (m_darkMode != wasDark)
-        emit darkModeChanged();
     const QStringList colors{m_themeBackground, m_themeForeground, m_themeAccent,
                              m_themeSelection, m_themeSelectionForeground,
                              m_themeCodeBackground};
     if (colors != previousColors)
         emit themeColorsChanged();
-}
-
-void Backend::watchOmarchyTheme() {
-    const QStringList watched = m_themeWatcher.files() + m_themeWatcher.directories();
-    if (!watched.isEmpty())
-        m_themeWatcher.removePaths(watched);
-
-    const QString currentDir = QDir::homePath()
-        + QStringLiteral("/.local/state/omarchy/current");
-    const QString themeDir = currentDir + QStringLiteral("/theme");
-    const QString colorsPath = themeDir + QStringLiteral("/colors.toml");
-
-    if (QDir(currentDir).exists())
-        m_themeWatcher.addPath(currentDir);
-    if (QDir(themeDir).exists())
-        m_themeWatcher.addPath(themeDir);
-    if (QFile::exists(colorsPath))
-        m_themeWatcher.addPath(colorsPath);
 }
 
 QUrl Backend::suggestedSaveUrl() const {

@@ -9,23 +9,18 @@ if command -v qmake6 >/dev/null 2>&1; then
 elif command -v qmake >/dev/null 2>&1; then
   QMAKE=qmake
 else
-  echo "qmake6 or qmake is required to build omawrite." >&2
+  echo "Qt 6 is required to build Macwrite: brew install qt" >&2
   exit 1
 fi
-
-JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-"$QMAKE" "$ROOT/omawrite.pro"
-make -j"$JOBS"
+"$QMAKE" "$ROOT/macwrite.pro"
+make -j"$(sysctl -n hw.ncpu)"
 
-if [ "$(uname -s)" = "Darwin" ]; then
-  # The bundle loads Qt from where it is installed. Sign it ad hoc so the
-  # bundle's resources are sealed along with the binary the linker signed.
-  codesign --force --sign - Omawrite.app
-  echo "Built $BUILD_DIR/Omawrite.app"
-else
-  echo "Built $BUILD_DIR/omawrite"
-fi
+# The bundle loads Qt from where Homebrew installed it. Sign it ad hoc so the
+# bundle's resources are sealed along with the binary the linker signed.
+codesign --force --sign - Macwrite.app
+
+echo "Built $BUILD_DIR/Macwrite.app"

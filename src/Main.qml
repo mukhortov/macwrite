@@ -13,7 +13,7 @@ ApplicationWindow {
     minimumWidth: 720
     minimumHeight: 520
     visible: true
-    title: (backend.modified ? "* " : "") + backend.fileName + " - Omawrite"
+    title: (backend.modified ? "* " : "") + backend.fileName + " - Macwrite"
 
     readonly property bool darkMode: backend.darkMode
     readonly property color pageColor: backend.themeBackground
@@ -21,15 +21,11 @@ ApplicationWindow {
     readonly property color mutedColor: darkMode ? "#909191" : "#aeb1b5"
     readonly property color selectionFill: backend.themeSelection
     readonly property color selectionTextColor: backend.themeSelectionForeground
-    // The desktop's text size knob (GNOME's text-scaling-factor, which
-    // `omarchy display text size` drives) anchored so its 12px default leaves
-    // the app at the sizes it was designed around, times the user's own
-    // text size set with Ctrl+= / Ctrl+- / Ctrl+wheel.
+    // The writer's own text size, set with Cmd+= / Cmd+- / Cmd+scroll.
     readonly property real textScale: backend.textScale
     readonly property int editorFontPixelSize: scaledSize(20)
     readonly property int footerHeight: scaledSize(32)
-    // Never wider than the Flickable's viewport, whatever the floor asks for:
-    // a tiling compositor can resize the window below its minimum width.
+    // Never wider than the Flickable's viewport, whatever the floor asks for.
     readonly property int editorWidth: Math.min(
         Math.round(writerFontMetrics.averageCharacterWidth * 65),
         Math.max(360, width - Math.round(writerFontMetrics.averageCharacterWidth * 20)),
@@ -43,9 +39,6 @@ ApplicationWindow {
     property string pendingAction: ""
     property bool replaceOpen: false
     property bool awaitingPendingSave: false
-    // macOS keeps ⌘H for hiding the app and ⌃F for moving the caret, so
-    // a few shortcuts follow its conventions there instead.
-    readonly property bool macOS: Qt.platform.os === "osx"
 
     Material.theme: darkMode ? Material.Dark : Material.Light
     Material.accent: backend.themeAccent
@@ -153,7 +146,8 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequence: win.macOS ? "Ctrl+Alt+F" : "Ctrl+H"
+        // Cmd+H belongs to macOS, which hides the app with it.
+        sequence: "Ctrl+Alt+F"
         onActivated: {
             searchOpen = true;
             replaceOpen = true;
@@ -234,14 +228,13 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequences: win.macOS ? ["Ctrl+Meta+F"] : ["Meta+F", "F11"]
+        // Cmd+Ctrl+F, as Qt spells Cmd as Ctrl and the Control key as Meta.
+        sequence: "Ctrl+Meta+F"
         onActivated: toggleFullScreen()
     }
 
-    // Elsewhere the window manager closes windows; macOS leaves Cmd+W to the app.
     Shortcut {
         sequence: "Ctrl+W"
-        enabled: win.macOS
         onActivated: win.close()
     }
 
@@ -382,30 +375,7 @@ ApplicationWindow {
         // to it without the feedback.
         Label {
             objectName: "shortcutList"
-            // Each row is [other platforms, macOS, action]; an empty key leaves
-            // the row out on that platform.
-            readonly property var rows: [
-                ["Ctrl+S", "⌘S", "Save"],
-                ["Ctrl+Shift+S", "⇧⌘S", "Save As"],
-                ["Ctrl+O", "⌘O", "Open"],
-                ["Ctrl+N", "⌘N", "New Window"],
-                ["", "⌘W", "Close Window"],
-                ["Ctrl+F", "⌘F", "Find"],
-                ["Ctrl+H", "⌥⌘F", "Find and Replace"],
-                ["Ctrl+B", "⌘B", "Bold"],
-                ["Ctrl+I", "⌘I", "Italic"],
-                ["Ctrl+Shift+X", "⇧⌘X", "Strikethrough"],
-                ["Ctrl+K", "⌘K", "Link"],
-                ["Ctrl+Shift+C", "⇧⌘C", "Copy as HTML"],
-                ["Ctrl+P", "⌘P", "Print"],
-                ["Ctrl+= / Ctrl+-", "⌘= / ⌘-", "Text Size"],
-                ["Ctrl+0", "⌘0", "Reset Text Size"],
-                ["F11 / Super+F", "⌃⌘F", "Fullscreen"],
-                ["Ctrl+?", "⌘?", "Shortcuts"]
-            ]
-            readonly property int column: win.macOS ? 1 : 0
-            text: rows.filter(row => row[column] !== "")
-                .map(row => row[column] + "  " + row[2]).join("\n")
+            text: "⌘S  Save\n⇧⌘S  Save As\n⌘O  Open\n⌘N  New Window\n⌘W  Close Window\n⌘F  Find\n⌥⌘F  Find and Replace\n⌘B  Bold\n⌘I  Italic\n⇧⌘X  Strikethrough\n⌘K  Link\n⇧⌘C  Copy as HTML\n⌘P  Print\n⌘= / ⌘-  Text Size\n⌘0  Reset Text Size\n⌃⌘F  Fullscreen\n⌘?  Shortcuts"
             lineHeight: 1.5
         }
     }
@@ -533,12 +503,10 @@ ApplicationWindow {
             }
 
             WheelHandler {
-                // Wayland compositors route every pointer's scroll through
-                // one seat device that Qt classifies as a touchpad, so the
-                // device type cannot tell a mouse wheel from two-finger
-                // scrolling. Distinguish by event shape instead: discrete
-                // wheel notches arrive with only angleDelta set, while
-                // finger scrolling carries pixel-precise pixelDelta.
+                // The device type does not reliably tell a mouse wheel from
+                // two-finger scrolling, so distinguish by event shape instead:
+                // discrete wheel notches arrive with only angleDelta set,
+                // while finger scrolling carries pixel-precise pixelDelta.
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 onWheel: function(wheel) {
                     if (wheel.modifiers & Qt.ControlModifier) {
@@ -663,8 +631,8 @@ ApplicationWindow {
                 // Native rendering hints glyphs to the pixel grid, which is
                 // crispest at whole scale factors but misplaces and unevenly
                 // rasterizes glyphs at fractional ones (and goes stale when
-                // the compositor delivers the fractional scale after the
-                // first frame). Fall back to Qt's scalable renderer there.
+                // the window learns its scale after the first frame). Fall
+                // back to Qt's scalable renderer there.
                 renderType: Screen.devicePixelRatio % 1 === 0 ? TextEdit.NativeRendering : TextEdit.QtRendering
                 cursorDelegate: Rectangle {
                     width: 1

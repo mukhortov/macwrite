@@ -1,17 +1,17 @@
+!macx: error("Macwrite builds for macOS only.")
+
 QT += core gui widgets printsupport qml quick quickcontrols2 quickdialogs2
-# The desktop portal that reports the colour scheme and text size is Linux-only.
-!macx: QT += dbus
 
 CONFIG += c++17 release
-TARGET = omawrite
+TARGET = Macwrite
 TEMPLATE = app
 
-macx {
-    TARGET = Omawrite
-    VERSION = 0.7.0
-    QMAKE_INFO_PLIST = macos/Info.plist
-    ICON = macos/omawrite.icns
-}
+# The one place the version lives: the app reports it and the bundle carries it.
+VERSION = 0.7.0
+DEFINES += MACWRITE_VERSION=\\\"$$VERSION\\\"
+
+QMAKE_INFO_PLIST = macos/Info.plist
+ICON = macos/macwrite.icns
 
 HEADERS += \
     src/appeventfilter.h \

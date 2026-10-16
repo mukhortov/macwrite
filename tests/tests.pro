@@ -1,12 +1,12 @@
 QT += core gui quick testlib
 CONFIG += testcase c++17
-macx: CONFIG -= app_bundle
+CONFIG -= app_bundle
 TEMPLATE = app
-TARGET = tst_omawrite
+TARGET = tst_macwrite
 
 INCLUDEPATH += ../src
 SOURCES += \
-    tst_omawrite.cpp \
+    tst_macwrite.cpp \
     ../src/appeventfilter.cpp \
     ../src/backend.cpp \
     ../src/cli.cpp \
@@ -18,4 +18,3 @@ HEADERS += \
     ../src/markdownhighlighter.h
 
 QT += widgets printsupport quickcontrols2 quickdialogs2
-!macx: QT += dbus
