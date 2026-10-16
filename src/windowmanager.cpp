@@ -1,7 +1,10 @@
 #include "windowmanager.h"
 
+#include <QAction>
 #include <QCoreApplication>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QMenuBar>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickWindow>
@@ -38,7 +41,9 @@ void bringForward(QQuickWindow *window) {
 
 WindowManager::WindowManager(QQmlEngine *engine, const QUrl &mainQml, QObject *parent)
     : QObject(parent), m_engine(engine), m_component(engine, mainQml),
-      m_textScale(Backend::storedTextScale()) {}
+      m_textScale(Backend::storedTextScale()) {
+    buildNoWindowMenuBar();
+}
 
 // The backends and contexts are children, so they go after every window,
 // whose bindings still read them.
@@ -49,6 +54,37 @@ WindowManager::~WindowManager() {
             delete entry.window;
         }
     }
+}
+
+// Each window brings its own menus. Once every window has closed, macOS shows
+// this parentless menu bar instead, so a window can still be opened. Its
+// commands are off while any window is open, so a key never belongs to two
+// menus at once.
+void WindowManager::buildNoWindowMenuBar() {
+    m_noWindowMenuBar = std::make_unique<QMenuBar>();
+    QMenu *file = m_noWindowMenuBar->addMenu(QStringLiteral("File"));
+
+    QAction *newWindow = file->addAction(QStringLiteral("New Window"));
+    newWindow->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
+    connect(newWindow, &QAction::triggered, this, [this]() { this->newWindow(); });
+
+    QAction *open = file->addAction(QStringLiteral("Open…"));
+    open->setShortcut(QKeySequence(QStringLiteral("Ctrl+O")));
+    connect(open, &QAction::triggered, this, [this]() {
+        const QUrl url = QFileDialog::getOpenFileUrl(
+            nullptr, QStringLiteral("Open File"), QUrl(),
+            QStringLiteral("Markdown files (*.md *.markdown);;All files (*)"));
+        if (url.isValid())
+            openFile(url);
+    });
+
+    const auto enableWithNoWindow = [this, file]() {
+        const bool noWindow = windows().isEmpty();
+        for (QAction *action : file->actions())
+            action->setEnabled(noWindow);
+    };
+    connect(this, &WindowManager::windowCountChanged, file, enableWithNoWindow);
+    enableWithNoWindow();
 }
 
 QList<QQuickWindow *> WindowManager::windows() const {

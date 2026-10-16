@@ -14,6 +14,8 @@
 #include <QStandardPaths>
 #include <QClipboard>
 #include <QMimeData>
+#include <QAction>
+#include <QMenuBar>
 #include "cli.h"
 
 #include "appeventfilter.h"
@@ -2768,6 +2770,38 @@ private slots:
         QTRY_VERIFY(!closedBackend);
         QVERIFY(!QFileInfo::exists(secondDraftLock));
         firstBackend->discardRecovery();
+    }
+
+    void opensAWindowFromTheMenuBarWithNoWindowOpen() {
+        QQmlEngine engine;
+        WindowManager windows(&engine, mainQmlUrl());
+        QAction *newWindow = nullptr;
+        for (QAction *action : windows.m_noWindowMenuBar->findChildren<QAction *>()) {
+            if (action->text() == QStringLiteral("New Window"))
+                newWindow = action;
+        }
+        QVERIFY(newWindow);
+        QCOMPARE(newWindow->shortcut(), QKeySequence(QStringLiteral("Ctrl+N")));
+
+        // With every window closed, Cmd+N reaches the menu bar macOS shows then.
+        QVERIFY(newWindow->isEnabled());
+        newWindow->trigger();
+        QCOMPARE(windows.windows().size(), 1);
+        QQuickWindow *window = windows.windows().constFirst();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+
+        // While a window is open its own menu has the key, so this one stands
+        // aside rather than make Cmd+N ambiguous.
+        QVERIFY(!newWindow->isEnabled());
+        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
+        QCOMPARE(windows.windows().size(), 2);
+
+        for (QQuickWindow *open : windows.windows())
+            QVERIFY(open->close());
+        QVERIFY(windows.windows().isEmpty());
+        QVERIFY(newWindow->isEnabled());
+        newWindow->trigger();
+        QCOMPARE(windows.windows().size(), 1);
     }
 
     void cascadesNewWindowsAndRemembersTheLastToClose() {

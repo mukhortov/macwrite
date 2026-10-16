@@ -7,7 +7,10 @@
 #include <QUrl>
 #include <QVariantMap>
 
+#include <memory>
+
 class Backend;
+class QMenuBar;
 class QQmlContext;
 class QQmlEngine;
 class QQuickWindow;
@@ -54,6 +57,8 @@ private slots:
     void closeCancelled();
 
 private:
+    friend class MacwriteTest;
+
     // A window stays listed after it closes, until it is gone, so the manager
     // can still take it down along with its backend.
     struct Window {
@@ -63,6 +68,7 @@ private:
         bool open = true;
     };
 
+    void buildNoWindowMenuBar();
     // Needs a window open to step from.
     QVariantMap cascadedGeometry() const;
     void windowActivated(QQuickWindow *window);
@@ -79,4 +85,6 @@ private:
     qreal m_textScale = 1.0;
     // The window whose unsaved changes a quit is waiting on.
     QPointer<QQuickWindow> m_quitWaitingOn;
+    // What macOS shows at the top of the screen once every window has closed.
+    std::unique_ptr<QMenuBar> m_noWindowMenuBar;
 };
