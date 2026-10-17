@@ -13,12 +13,14 @@ SOURCES += \
     ../src/backend.cpp \
     ../src/cli.cpp \
     ../src/markdownhighlighter.cpp \
+    ../src/plaintextlayout.cpp \
     ../src/windowmanager.cpp
 HEADERS += \
     ../src/appeventfilter.h \
     ../src/backend.h \
     ../src/cli.h \
     ../src/markdownhighlighter.h \
+    ../src/plaintextlayout.h \
     ../src/windowmanager.h
 
-QT += widgets printsupport quickcontrols2 quickdialogs2
+QT += widgets printsupport quickcontrols2 quickdialogs2 concurrent

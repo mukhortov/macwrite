@@ -35,6 +35,13 @@ ApplicationWindow {
     property bool searchUpdating: false
     property var searchMatches: []
     property int searchMatchIndex: -1
+    // The matches in view, painted behind the text. Painting them through the
+    // highlighter would restyle, and so lay out again, every line of the
+    // document on each key typed into the search field.
+    property var visibleSearchMatches: []
+    property int searchLayoutRevision: 0
+    readonly property color searchMatchColor: darkMode ? "#725b18" : "#ffe58a"
+    readonly property color currentSearchMatchColor: darkMode ? "#b36b20" : "#ffad42"
     property url pendingOpenUrl
     property string pendingAction: ""
     property bool replaceOpen: false
@@ -124,23 +131,57 @@ ApplicationWindow {
         showSearchMatch(selectMatch);
     }
 
-    function matchAtOrAfter(position) {
-        for (var i = 0; i < searchMatches.length; ++i) {
-            if (searchMatches[i] >= position)
-                return i;
+    // The index of the first match at or past `position`, by halving, as a
+    // short query can match hundreds of thousands of times.
+    function firstMatchFrom(position) {
+        var low = 0;
+        var high = searchMatches.length;
+        while (low < high) {
+            var middle = (low + high) >> 1;
+            if (searchMatches[middle] < position)
+                low = middle + 1;
+            else
+                high = middle;
         }
-        return searchMatches.length > 0 ? 0 : -1;
+        return low;
+    }
+
+    function matchAtOrAfter(position) {
+        if (searchMatches.length === 0)
+            return -1;
+        var index = firstMatchFrom(position);
+        return index < searchMatches.length ? index : 0;
+    }
+
+    function updateVisibleSearchMatches() {
+        var length = searchField.text.length;
+        if (!searchOpen || length === 0 || searchMatches.length === 0) {
+            if (visibleSearchMatches.length > 0)
+                visibleSearchMatches = [];
+            return;
+        }
+        var top = editorFlick.contentY - editor.y;
+        var first = editor.positionAt(0, top);
+        var last = editor.positionAt(editor.width, top + editorFlick.height);
+        var visible = [];
+        for (var i = firstMatchFrom(first - length + 1);
+             i < searchMatches.length && searchMatches[i] <= last && visible.length < 2000; ++i) {
+            visible.push({ start: searchMatches[i], end: searchMatches[i] + length,
+                           current: i === searchMatchIndex });
+        }
+        visibleSearchMatches = visible;
+        searchLayoutRevision++;
     }
 
     function showSearchMatch(selectMatch) {
         var start = searchMatchIndex >= 0 ? searchMatches[searchMatchIndex] : -1;
         searchUpdating = true;
-        backend.setSearchHighlight(searchField.text, start);
         if (selectMatch && start >= 0) {
             editor.select(start, start + searchField.text.length);
             editorFlick.ensureCursorVisible();
         }
         searchUpdating = false;
+        updateVisibleSearchMatches();
     }
 
     function moveSearch(direction) {
@@ -154,7 +195,7 @@ ApplicationWindow {
     function closeSearch() {
         searchOpen = false;
         searchUpdating = true;
-        backend.setSearchHighlight("", -1);
+        updateVisibleSearchMatches();
         editor.deselect();
         searchUpdating = false;
         replaceOpen = false;
@@ -691,7 +732,57 @@ ApplicationWindow {
             }
 
             onMovementStarted: wheelScroll.stop()
-            onContentYChanged: editor.hoveredLinkUrl = ""
+            onContentYChanged: {
+                editor.hoveredLinkUrl = "";
+                if (win.searchOpen)
+                    win.updateVisibleSearchMatches();
+            }
+            onHeightChanged: if (win.searchOpen) win.updateVisibleSearchMatches()
+
+            // Text that reflows moves the matches with it.
+            Connections {
+                target: editor
+                enabled: win.searchOpen
+                function onContentHeightChanged() { win.updateVisibleSearchMatches(); }
+                function onWidthChanged() { win.updateVisibleSearchMatches(); }
+            }
+
+            // Search matches in view, behind the text. A match the line wraps
+            // in two is painted as the part on each line.
+            Repeater {
+                model: win.visibleSearchMatches
+                delegate: Item {
+                    id: match
+                    required property var modelData
+                    readonly property rect from: {
+                        win.searchLayoutRevision;
+                        return editor.positionToRectangle(modelData.start);
+                    }
+                    readonly property rect to: {
+                        win.searchLayoutRevision;
+                        return editor.positionToRectangle(modelData.end);
+                    }
+                    readonly property bool wrapped: to.y > from.y
+                    readonly property color fill: modelData.current
+                        ? win.currentSearchMatchColor : win.searchMatchColor
+
+                    Rectangle {
+                        x: editor.x + match.from.x
+                        y: editor.y + match.from.y
+                        width: Math.max(0, (match.wrapped ? editor.width : match.to.x) - match.from.x)
+                        height: match.from.height
+                        color: match.fill
+                    }
+                    Rectangle {
+                        visible: match.wrapped
+                        x: editor.x
+                        y: editor.y + match.to.y
+                        width: match.to.x
+                        height: match.to.height
+                        color: match.fill
+                    }
+                }
+            }
 
             // Ctrl+wheel changes the text size, as it does in a browser. A
             // wheel notch is a whole step, but a touchpad trickles in pixels,
@@ -794,6 +885,10 @@ ApplicationWindow {
                 font.family: backend.editorFont
                 font.pixelSize: win.editorFontPixelSize
                 font.weight: Font.Normal
+                // Shaping Latin text only kerns and ligates it, which a
+                // monospaced font has no use for, and it is most of the cost
+                // of laying out a long document. Other scripts still shape.
+                font.preferShaping: !backend.editorFontFixedPitch
                 // Native rendering hints glyphs to the pixel grid, which is
                 // crispest at whole scale factors but misplaces and unevenly
                 // rasterizes glyphs at fractional ones (and goes stale when
@@ -801,8 +896,25 @@ ApplicationWindow {
                 // back to Qt's scalable renderer there.
                 renderType: Screen.devicePixelRatio % 1 === 0 ? TextEdit.NativeRendering : TextEdit.QtRendering
                 cursorDelegate: Rectangle {
+                    id: caret
                     width: 1
                     color: win.textColor
+
+                    // Over a long document TextEdit hides the caret when the
+                    // view scrolls it away while the editor is not focused, and
+                    // shows it again only on a later scroll. A file opened from
+                    // the Open dialog loads while the dialog has the focus, so
+                    // the caret stayed hidden until the writer scrolled. Moving
+                    // the caret or focusing the editor shows it again; out of
+                    // view, the Flickable clips it anyway.
+                    Connections {
+                        target: editor
+                        function onCursorRectangleChanged() { caret.visible = true; }
+                        function onActiveFocusChanged() {
+                            if (editor.activeFocus)
+                                caret.visible = true;
+                        }
+                    }
                 }
                 onCursorRectangleChanged: editorFlick.ensureCursorVisible()
                 onFontChanged: backend.documentFontChanged()
@@ -826,7 +938,7 @@ ApplicationWindow {
                     forceActiveFocus();
                     var start = selectionStart;
                     var end = selectionEnd;
-                    var selected = text.slice(start, end);
+                    var selected = getText(start, end);
                     var url = backend.clipboardUrl();
                     var label = selected.length > 0 ? selected : "link text";
                     var markdown = markdownLink(label, url.length > 0 ? url : "https://");
@@ -848,8 +960,10 @@ ApplicationWindow {
                         replaceSelectionWith("\n");
                         return;
                     }
-                    var lineStart = text.lastIndexOf("\n", cursorPosition - 1) + 1;
-                    var line = text.slice(lineStart, cursorPosition);
+                    // Reading only the lines involved, as a copy of the whole
+                    // text costs as much as the document is long.
+                    var lineStart = backend.lineStart(cursorPosition);
+                    var line = getText(lineStart, cursorPosition);
                     if (backend.insideFence(cursorPosition)) {
                         replaceSelectionWith("\n");
                         return;
@@ -875,10 +989,9 @@ ApplicationWindow {
                     // is not the caret's line when it was dragged right to left.
                     var start = selectionStart;
                     var end = selectionEnd;
-                    var head = text.slice(text.lastIndexOf("\n", start - 1) + 1, start);
-                    var lineEnd = text.indexOf("\n", end);
-                    var rest = lineEnd < 0 ? text.slice(end)
-                                           : text.slice(end, lineEnd);
+                    var head = getText(backend.lineStart(start), start);
+                    var lineEnd = backend.lineEnd(end);
+                    var rest = getText(end, lineEnd < 0 ? length : lineEnd);
                     if (/^\s*$/.test(head) && /^\s*$/.test(rest)) {
                         replaceSelectionWith("\n");
                         return;
@@ -913,7 +1026,7 @@ ApplicationWindow {
                     if (url === "")
                         return false;
 
-                    var selected = text.slice(start, end);
+                    var selected = getText(start, end);
                     var leading = selected.match(/^\s*/)[0];
                     var trailing = selected.match(/\s*$/)[0];
                     var linkText = selected.slice(leading.length,
@@ -969,7 +1082,7 @@ ApplicationWindow {
                     }
 
                     var pos = backend.cursorPositionStep(cursorPosition, direction);
-                    pos = Math.max(0, Math.min(text.length, pos));
+                    pos = Math.max(0, Math.min(length, pos));
                     cursorPosition = direction > 0
                         ? skipHiddenForward(pos)
                         : skipHiddenBackward(pos);
@@ -991,13 +1104,12 @@ ApplicationWindow {
                     if (selectionStart !== selectionEnd || cursorPosition < 2)
                         return false;
 
-                    if (text.slice(cursorPosition - 2, cursorPosition) !== "\n\n")
+                    if (getText(cursorPosition - 2, cursorPosition) !== "\n\n")
                         return false;
 
                     var start = cursorPosition - 2;
-                    var lineEnd = text.indexOf("\n", cursorPosition);
-                    var line = lineEnd < 0 ? text.slice(cursorPosition)
-                                           : text.slice(cursorPosition, lineEnd);
+                    var lineEnd = backend.lineEnd(cursorPosition);
+                    var line = getText(cursorPosition, lineEnd < 0 ? length : lineEnd);
                     // Something on the caret's line and the pair above it is a
                     // paragraph break and nothing else, either the one Return
                     // wrote to end a paragraph or the one the writer is now
@@ -1008,7 +1120,7 @@ ApplicationWindow {
                         // already in the document. Above a blank line Return
                         // writes a single break too, and so wrote neither of
                         // these.
-                        var above = text.slice(text.lastIndexOf("\n", start - 1) + 1, start);
+                        var above = getText(backend.lineStart(start), start);
                         if (/^\s*$/.test(above))
                             return false;
                         // Past that the two Returns leave the same text and the
@@ -1021,9 +1133,8 @@ ApplicationWindow {
                             return false;
                         // ...and so does the next paragraph, which the pair
                         // would otherwise be pulled up against.
-                        var belowEnd = text.indexOf("\n", lineEnd + 1);
-                        var below = belowEnd < 0 ? text.slice(lineEnd + 1)
-                                                 : text.slice(lineEnd + 1, belowEnd);
+                        var belowEnd = backend.lineEnd(lineEnd + 1);
+                        var below = getText(lineEnd + 1, belowEnd < 0 ? length : belowEnd);
                         if (!/^\s*$/.test(below))
                             return false;
                     }
@@ -1090,7 +1201,8 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     text: "# Start writing"
-                    visible: editor.text.length === 0 && !editor.activeFocus
+                    // length, unlike text.length, needs no copy of the document.
+                    visible: editor.length === 0 && !editor.activeFocus
                     color: win.mutedColor
                     font.family: editor.font.family
                     font.pixelSize: editor.font.pixelSize

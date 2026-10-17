@@ -6,8 +6,9 @@ function normalizePlainText(text) {
 
 function replaceRange(editor, rangeStart, rangeEnd, replacement,
                       selectionStartOffset, selectionEndOffset) {
-    var start = Math.max(0, Math.min(editor.text.length, rangeStart));
-    var end = Math.max(start, Math.min(editor.text.length, rangeEnd));
+    // length and getText read the document in place; text would copy all of it.
+    var start = Math.max(0, Math.min(editor.length, rangeStart));
+    var end = Math.max(start, Math.min(editor.length, rangeEnd));
     var insertedText = normalizePlainText(replacement);
 
     // The editor makes the change as one edit, so a single undo takes it back.
@@ -49,18 +50,21 @@ function toggleWrap(editor, marker, span) {
         } else if (start >= span.textEnd) {
             editor.cursorPosition = span.end;
         } else {
-            var content = editor.text.slice(span.contentStart, span.contentEnd);
+            var content = editor.getText(span.contentStart, span.contentEnd);
             var caret = Math.max(0, start - span.contentStart);
             replaceRange(editor, span.start, span.end, content, caret, caret);
         }
         return;
     }
-    var text = editor.text;
+    var length = editor.length;
+    var charAt = function(position) {
+        return position < 0 || position >= length ? "" : editor.getText(position, position + 1);
+    };
     var size = marker.length;
     var mark = marker.charAt(0);
     var runFrom = function(position, step, limit) {
         var run = 0;
-        while (position + run * step !== limit && text.charAt(position + run * step) === mark)
+        while (position + run * step !== limit && charAt(position + run * step) === mark)
             ++run;
         return run;
     };
@@ -71,17 +75,17 @@ function toggleWrap(editor, marker, span) {
         var runs = part.match(new RegExp("\\" + mark + "+", "g")) || [];
         return runs.some(function(run) { return holds(run.length); });
     };
-    var selected = text.slice(start, end);
+    var selected = editor.getText(start, end);
     var inner = selected.slice(size, selected.length - size);
 
     // A marker in the middle means separate spans, as in "**a** and **b**":
     // unwrapping would break them, so wrap instead.
-    if (holds(runFrom(start - 1, -1, -1)) && holds(runFrom(end, 1, text.length))
+    if (holds(runFrom(start - 1, -1, -1)) && holds(runFrom(end, 1, length))
             && !hasMarker(selected)) {
         replaceRange(editor, start - size, end + size, selected, 0, selected.length);
     } else if (selected.length >= 2 * size && holds(runFrom(start, 1, end))
                && holds(runFrom(end - 1, -1, start - 1)) && !hasMarker(inner)
-               && text.charAt(start - 1) !== mark && text.charAt(end) !== mark) {
+               && charAt(start - 1) !== mark && charAt(end) !== mark) {
         replaceRange(editor, start, end, inner, 0, inner.length);
     } else {
         replaceRange(editor, start, end, marker + selected + marker,

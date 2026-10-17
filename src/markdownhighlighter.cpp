@@ -38,36 +38,6 @@ void MarkdownHighlighter::refreshFont() {
     rehighlight();
 }
 
-void MarkdownHighlighter::setSearch(const QString &query, int currentMatchStart) {
-    // An edit can carry the painted match away from an offset another match
-    // now holds, so the offset matching is not enough to leave things be.
-    const bool matchStayed = m_currentMatch.isNull() ? currentMatchStart < 0
-                                                     : m_currentMatch.position() == currentMatchStart;
-    if (m_searchQuery == query && m_currentMatchStart == currentMatchStart && matchStayed)
-        return;
-    const bool sameQuery = m_searchQuery == query;
-    const QTextBlock left = m_currentMatch.isNull() ? QTextBlock() : m_currentMatch.block();
-    m_searchQuery = query;
-    m_currentMatchStart = currentMatchStart;
-    m_currentMatch = QTextCursor();
-    if (currentMatchStart >= 0) {
-        m_currentMatch = QTextCursor(document());
-        m_currentMatch.setPosition(qBound(0, currentMatchStart, document()->characterCount() - 1));
-    }
-    if (!sameQuery) {
-        rehighlight();
-        return;
-    }
-
-    // Only the current match moved, so restyle just the blocks it left and
-    // entered rather than the whole document.
-    const QTextBlock entered = m_currentMatch.isNull() ? QTextBlock() : m_currentMatch.block();
-    if (left.isValid())
-        rehighlightBlock(left);
-    if (entered.isValid() && entered != left)
-        rehighlightBlock(entered);
-}
-
 void MarkdownHighlighter::rebuildFormats() {
     const QColor marker = m_darkMode ? QColor(QStringLiteral("#4f525a"))
                                      : QColor(QStringLiteral("#aeb1b5"));
@@ -123,13 +93,6 @@ void MarkdownHighlighter::rebuildFormats() {
     m_linkFormat = QTextCharFormat();
     m_linkFormat.setForeground(link);
     m_linkFormat.setFontUnderline(true);
-
-    m_searchFormat = QTextCharFormat();
-    m_searchFormat.setBackground(m_darkMode ? QColor(QStringLiteral("#725b18"))
-                                            : QColor(QStringLiteral("#ffe58a")));
-    m_currentSearchFormat = QTextCharFormat();
-    m_currentSearchFormat.setBackground(m_darkMode ? QColor(QStringLiteral("#b36b20"))
-                                                   : QColor(QStringLiteral("#ffad42")));
 }
 
 void MarkdownHighlighter::highlightBlock(const QString &text) {
@@ -143,7 +106,6 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
                                          fence % 2 ? QLatin1Char('~') : QLatin1Char('`'));
         setCurrentBlockState(closing ? Prose : previous);
         setFormat(0, text.length(), closing ? m_fenceFormat : m_codeFormat);
-        highlightSearch(text);
         return;
     }
 
@@ -152,7 +114,6 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
         const bool tildes = text.trimmed().startsWith(QLatin1Char('~'));
         setCurrentBlockState(InsideFence + (opening - 3) * 2 + (tildes ? 1 : 0));
         setFormat(0, text.length(), m_fenceFormat);
-        highlightSearch(text);
         return;
     }
     setCurrentBlockState(Prose);
@@ -165,7 +126,6 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
             highlightInline(text);
         }
     }
-    highlightSearch(text);
 }
 
 // Three or more backticks or tildes, indented at most three spaces. An info
@@ -184,22 +144,6 @@ bool MarkdownHighlighter::closesFence(const QString &text, int openingLength, QC
     const QRegularExpressionMatch match = closingRe.match(text);
     return match.hasMatch() && match.capturedLength(1) >= openingLength
         && match.captured(1).at(0) == marker;
-}
-
-void MarkdownHighlighter::highlightSearch(const QString &text) {
-    if (m_searchQuery.isEmpty())
-        return;
-
-    int from = 0;
-    while ((from = text.indexOf(m_searchQuery, from, Qt::CaseInsensitive)) >= 0) {
-        const int documentStart = currentBlock().position() + from;
-        QTextCharFormat format = this->format(from);
-        format.setBackground(documentStart == m_currentMatchStart
-                                 ? m_currentSearchFormat.background()
-                                 : m_searchFormat.background());
-        setFormat(from, m_searchQuery.length(), format);
-        from += qMax(1, m_searchQuery.length());
-    }
 }
 
 void MarkdownHighlighter::highlightMarkers(const QString &text) {

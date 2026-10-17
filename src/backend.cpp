@@ -3,6 +3,8 @@
 #include <CoreText/CoreText.h>
 
 #include <QClipboard>
+#include <QCryptographicHash>
+#include <QtConcurrentRun>
 #include <QColor>
 #include <QDir>
 #include <QFile>
@@ -13,6 +15,7 @@
 #include <QMimeData>
 #include <QPrintDialog>
 #include <QPrinter>
+#include <QQuickItem>
 #include <QQuickTextDocument>
 #include <QRegularExpression>
 #include <QScreen>
@@ -33,9 +36,11 @@
 #include <QWindow>
 
 #include <algorithm>
+#include <optional>
 #include <iterator>
 
 #include "markdownhighlighter.h"
+#include "plaintextlayout.h"
 
 constexpr qreal typoraLineHeightPercent = 140;
 
@@ -74,6 +79,17 @@ const QRegularExpression symbolFontName(
     QRegularExpression::CaseInsensitiveOption);
 
 namespace {
+
+// A fingerprint for telling whether two texts are the same without keeping
+// either; SHA-256 makes a false match out of reach.
+QByteArray bytesDigest(QByteArrayView bytes) {
+    return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+}
+
+QByteArray textDigest(const QString &text) {
+    return bytesDigest(QByteArrayView(reinterpret_cast<const char *>(text.constData()),
+                                      text.size() * qsizetype(sizeof(QChar))));
+}
 
 // A shade of `from` carried part of the way towards `to`.
 QColor blend(const QColor &from, const QColor &to, qreal amount) {
@@ -130,6 +146,8 @@ constexpr int recoverySlotCount = 100;
 
 Backend::Backend(QObject *parent) : QObject(parent) {
     m_textZoom = storedTextScale();
+    // An untitled document starts out matching its empty baseline.
+    setKnownFileContents(QByteArray(), false);
 
     const QString savedFont = QSettings().value(editorFontSetting).toString();
     m_editorFont = !savedFont.isEmpty() && QFontDatabase::hasFamily(savedFont)
@@ -154,8 +172,17 @@ Backend::Backend(QObject *parent) : QObject(parent) {
         }
     }
     m_wordCountTimer.setSingleShot(true);
-    m_wordCountTimer.setInterval(120);
+    m_wordCountTimer.setInterval(250);
     connect(&m_wordCountTimer, &QTimer::timeout, this, &Backend::refreshWordCount);
+    connect(&m_wordCountWatcher, &QFutureWatcher<int>::finished, this, [this]() {
+        // Edits made while counting are counted again rather than shown late.
+        if (m_wordCountStale) {
+            m_wordCountStale = false;
+            refreshWordCount();
+            return;
+        }
+        setWordCount(m_wordCountWatcher.result());
+    });
     m_recoveryTimer.setSingleShot(true);
     m_recoveryTimer.setInterval(750);
     connect(&m_recoveryTimer, &QTimer::timeout, this, &Backend::writeRecovery);
@@ -282,7 +309,21 @@ void Backend::attachDocument(QObject *textDocument) {
         delete m_highlighter.data();
 
     m_document = quickDocument->textDocument();
-    m_lastDocumentText = m_document->toPlainText();
+    // TextEdit builds its text for drawing only where its viewport shows it
+    // once it observes the viewport, but it turns that on only for text set
+    // through its `text` property. Documents arrive here instead, so without
+    // this every keystroke rebuilds the whole document's text.
+    if (auto *editor = qobject_cast<QQuickItem *>(quickDocument->parent()))
+        editor->setFlag(QQuickItem::ItemObservesViewport);
+    // Qt's own layout moves every line below an edit, which in a long
+    // document is most of the time a keystroke takes.
+    if (!qobject_cast<PlainTextLayout *>(m_document->documentLayout()))
+        m_document->setDocumentLayout(new PlainTextLayout(m_document));
+    // Taken now, as the highlighter's first pass reports a change before any
+    // edit, and must not be mistaken for one that saves or drops a draft.
+    takeEditState();
+    connect(m_document, &QTextDocument::undoCommandAdded, this,
+            [this]() { m_editState.commandAdded = true; });
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setTheme(m_darkMode, m_themeBackground, m_themeForeground, m_themeAccent,
                             m_themeCodeBackground);
@@ -520,26 +561,31 @@ QString Backend::clipboardText() const {
 }
 
 bool Backend::editorTextChanged() {
-    if (m_loading || m_formattingTypography)
+    if (m_loading || m_formattingTypography || !m_document)
         return false;
 
-    const QString text = currentDocumentText();
-    if (text == m_lastDocumentText)
-        return false;
-    m_lastDocumentText = text;
-
-    reapplyTypographyToChange();
-
-    scheduleWordCount();
-
-    const QString &baseline = m_lastKnownFileText;
     // An empty baseline means a pristine untitled document, but only when there
     // is no file behind it. Once there is one, an unknown baseline is unknown
     // rather than empty, and emptying the editor is a change like any other.
     const bool baselineKnown = m_hasKnownFileContents
         || !m_fileUrl.isValid() || m_fileUrl.isEmpty();
 
-    if (baselineKnown && text == baseline) {
+    // A whole new text set at once, the same length and with no undo history,
+    // leaves no trace in the edit state; the saved text still tells, as an
+    // unmodified document stops matching it. Its length settles that quickly.
+    std::optional<bool> matchesBaseline;
+    if (!documentEdited()) {
+        matchesBaseline = baselineKnown && documentMatchesKnownText();
+        if (*matchesBaseline != m_modified)
+            return false;
+    }
+
+    reapplyTypographyToChange();
+    takeEditState();
+
+    scheduleWordCount();
+
+    if (matchesBaseline.value_or(baselineKnown && documentMatchesKnownText())) {
         setModified(false);
         clearRecovery();
         if (m_hasKnownFileContents)
@@ -705,15 +751,13 @@ int Backend::cursorPositionStep(int position, int direction) const
     return blockStart + qBound(0, stepped, blockTextLength);
 }
 
-void Backend::setSearchHighlight(const QString &query, int currentMatchStart) {
-    if (m_highlighter)
-        m_highlighter->setSearch(query, currentMatchStart);
-}
-
-// Matched the way the highlighter matches, so the offsets agree with what it
-// paints even where lowercasing changes a string's length.
-QVariantList Backend::searchMatches(const QString &query) const {
-    QVariantList matches;
+// Matched case-insensitively in the text itself, so the offsets are the
+// document's even where lowercasing would change a string's length. A list of
+// ints reaches QML as a sequence over the list itself, where a QVariantList
+// would become a JavaScript array one match at a time, and a short query can
+// match hundreds of thousands of times.
+QList<int> Backend::searchMatches(const QString &query) const {
+    QList<int> matches;
     if (query.isEmpty())
         return matches;
     const QString text = currentDocumentText();
@@ -736,6 +780,29 @@ void Backend::replaceRange(int start, int end, const QString &text) {
     cursor.setPosition(qBound(0, end, last), QTextCursor::KeepAnchor);
     cursor.insertText(text);
     cursor.endEditBlock();
+}
+
+// Where the line holding `position` starts, as text.lastIndexOf("\n",
+// position - 1) + 1 finds it, from the document's own index of its lines
+// rather than a copy of the whole text.
+int Backend::lineStart(int position) const {
+    if (!m_document)
+        return 0;
+    const QTextBlock block =
+        m_document->findBlock(qBound(0, position, m_document->characterCount() - 1));
+    return block.isValid() ? block.position() : 0;
+}
+
+// The line break that ends the line holding `position`, or -1 on the last
+// line, as text.indexOf("\n", position) finds it.
+int Backend::lineEnd(int position) const {
+    if (!m_document)
+        return -1;
+    const QTextBlock block =
+        m_document->findBlock(qBound(0, position, m_document->characterCount() - 1));
+    if (!block.isValid() || !block.next().isValid())
+        return -1;
+    return block.position() + block.length() - 1;
 }
 
 // A block's state says what follows its line, so a fence line itself is only
@@ -791,6 +858,10 @@ void Backend::setEditorFont(const QString &family) {
     m_editorFont = family;
     QSettings().setValue(editorFontSetting, family);
     emit editorFontChanged();
+}
+
+bool Backend::editorFontFixedPitch() const {
+    return QFontDatabase::isFixedPitch(m_editorFont);
 }
 
 // The families of the installed fonts that can set the Latin text the editor
@@ -869,13 +940,25 @@ void Backend::loadDocumentText(const QString &text) {
     }
 
     m_loading = true;
-    m_document->setPlainText(text);
-    m_lastDocumentText = text;
+    // As setPlainText does, with undo off and in one edit from an empty
+    // document, but formatting each line as it goes in: a new line takes the
+    // format of the one it breaks from, so the first line carries the line
+    // height to all the rest, where a pass afterwards would format every line
+    // again one by one.
+    const bool undoEnabled = m_document->isUndoRedoEnabled();
+    m_document->setUndoRedoEnabled(false);
+    QTextCursor cursor(m_document);
+    cursor.beginEditBlock();
+    m_document->clear();
+    cursor.setBlockFormat(lineHeightFormat());
+    cursor.insertText(text);
+    cursor.endEditBlock();
+    m_document->setUndoRedoEnabled(undoEnabled);
     m_loading = false;
+    takeEditState();
 
-    applyDocumentTypography();
     m_wordCountTimer.stop();
-    setWordCount(countWords(text));
+    countWordsInBackground(text);
 }
 
 void Backend::setFileUrl(const QUrl &url) {
@@ -1006,8 +1089,10 @@ bool Backend::diskMatchesKnownContents() const {
     if (!m_hasKnownFileContents)
         return false;
     QFile file(m_fileUrl.toLocalFile());
-    return file.open(QIODevice::ReadOnly | QIODevice::Text)
-        && file.readAll() == m_lastKnownFileContents;
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    const QByteArray contents = file.readAll();
+    return contents.size() == m_known.size && bytesDigest(contents) == m_known.digest;
 }
 
 void Backend::reportExternalChange(bool deleted) {
@@ -1026,11 +1111,12 @@ bool Backend::savesUnchanged(const QByteArray &raw) {
 }
 
 void Backend::setKnownFileContents(const QByteArray &contents, bool known) {
-    m_lastKnownFileContents = contents;
     m_hasKnownFileContents = known;
     // Every caller reads in text mode or writes plain line endings, so there
     // are no carriage returns to strip.
-    m_lastKnownFileText = known ? QString::fromUtf8(contents) : QString();
+    const QString text = known ? QString::fromUtf8(contents) : QString();
+    m_known = {known ? contents.size() : 0, bytesDigest(known ? contents : QByteArray()),
+               text.size(), textDigest(text)};
 }
 
 void Backend::writeRecovery() {
@@ -1187,7 +1273,37 @@ void Backend::setWordCount(int words) {
 }
 
 void Backend::refreshWordCount() {
-    setWordCount(countWords(currentDocumentText()));
+    countWordsInBackground(currentDocumentText());
+}
+
+// Counting a long document takes a while, so it runs on a worker thread and
+// typing never waits for it.
+void Backend::countWordsInBackground(const QString &text) {
+    if (m_wordCountWatcher.isRunning()) {
+        m_wordCountStale = true;
+        return;
+    }
+    m_wordCountWatcher.setFuture(QtConcurrent::run(&Backend::countWords, text));
+}
+
+bool Backend::documentEdited() const {
+    return m_editState.commandAdded
+        || m_document->characterCount() != m_editState.length
+        || m_document->availableUndoSteps() != m_editState.undoSteps
+        || m_document->availableRedoSteps() != m_editState.redoSteps;
+}
+
+void Backend::takeEditState() {
+    m_editState = {m_document->characterCount(), m_document->availableUndoSteps(),
+                   m_document->availableRedoSteps(), false};
+}
+
+// Lengths differ for almost every edit, which settles it without reading the
+// whole text.
+bool Backend::documentMatchesKnownText() const {
+    if (!m_document || m_document->characterCount() - 1 != m_known.textLength)
+        return false;
+    return textDigest(currentDocumentText()) == m_known.textDigest;
 }
 
 void Backend::scheduleWordCount() {
@@ -1203,13 +1319,14 @@ void Backend::applyDocumentTypography() {
     const bool undoEnabled = m_document->isUndoRedoEnabled();
     m_document->setUndoRedoEnabled(false);
 
+    // Turning undo back on reports a change too, so the pass ends after it.
     m_formattingTypography = true;
     QTextCursor cursor(m_document);
     cursor.select(QTextCursor::Document);
     cursor.mergeBlockFormat(lineHeightFormat());
-    m_formattingTypography = false;
-
     m_document->setUndoRedoEnabled(undoEnabled);
+    m_formattingTypography = false;
+    takeEditState();
 }
 
 void Backend::reapplyTypographyToChange() {

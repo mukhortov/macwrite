@@ -1,6 +1,6 @@
 !macx: error("Write builds for macOS only.")
 
-QT += core gui widgets printsupport qml quick quickcontrols2 quickdialogs2
+QT += core gui widgets printsupport qml quick quickcontrols2 quickdialogs2 concurrent
 
 CONFIG += c++17 release
 TARGET = Write
@@ -20,6 +20,7 @@ HEADERS += \
     src/backend.h \
     src/cli.h \
     src/markdownhighlighter.h \
+    src/plaintextlayout.h \
     src/systemtheme.h \
     src/windowmanager.h
 
@@ -29,6 +30,7 @@ SOURCES += \
     src/backend.cpp \
     src/cli.cpp \
     src/markdownhighlighter.cpp \
+    src/plaintextlayout.cpp \
     src/systemtheme.cpp \
     src/windowmanager.cpp
 

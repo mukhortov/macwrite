@@ -6,6 +6,7 @@
 #include <QFileSystemWatcher>
 #include <QString>
 #include <QStringList>
+#include <QFutureWatcher>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -32,6 +33,7 @@ class Backend : public QObject {
     Q_PROPERTY(QString themeSelection READ themeSelection NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeSelectionForeground READ themeSelectionForeground NOTIFY themeColorsChanged)
     Q_PROPERTY(QString editorFont READ editorFont WRITE setEditorFont NOTIFY editorFontChanged)
+    Q_PROPERTY(bool editorFontFixedPitch READ editorFontFixedPitch NOTIFY editorFontChanged)
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -60,6 +62,7 @@ public:
     QString themeSelectionForeground() const { return m_themeSelectionForeground; }
     QString editorFont() const { return m_editorFont; }
     void setEditorFont(const QString &family);
+    bool editorFontFixedPitch() const;
     // Listed the first time it is asked for, then shared by every window.
     Q_INVOKABLE QStringList availableFonts() const;
     static QString defaultEditorFont();
@@ -99,10 +102,11 @@ public:
     Q_INVOKABLE QString linkUrlAt(int position) const;
     Q_INVOKABLE QVariantMap emphasisSpanAt(int position, const QString &marker) const;
     Q_INVOKABLE int cursorPositionStep(int position, int direction) const;
-    Q_INVOKABLE void setSearchHighlight(const QString &query, int currentMatchStart);
-    Q_INVOKABLE QVariantList searchMatches(const QString &query) const;
+    Q_INVOKABLE QList<int> searchMatches(const QString &query) const;
     Q_INVOKABLE void replaceRange(int start, int end, const QString &text);
     Q_INVOKABLE bool insideFence(int position) const;
+    Q_INVOKABLE int lineStart(int position) const;
+    Q_INVOKABLE int lineEnd(int position) const;
     Q_INVOKABLE QVariantMap windowGeometry() const;
     void saveWindowGeometry(int x, int y, int width, int height, bool maximized);
     Q_INVOKABLE void documentFontChanged();
@@ -138,6 +142,10 @@ private:
     void setWordCount(int words);
     void refreshWordCount();
     void scheduleWordCount();
+    void countWordsInBackground(const QString &text);
+    bool documentMatchesKnownText() const;
+    bool documentEdited() const;
+    void takeEditState();
     void applyDocumentTypography();
     void reapplyTypographyToChange();
     void scheduleRecovery();
@@ -172,9 +180,26 @@ private:
     QPointer<QTextDocument> m_document;
     QPointer<QWindow> m_parentWindow;
     QPointer<MarkdownHighlighter> m_highlighter;
-    QString m_lastDocumentText;
-    QByteArray m_lastKnownFileContents;
-    QString m_lastKnownFileText;
+    // What the document looked like when its text was last taken in. Edits
+    // change its length or its undo history; highlighting and line-height
+    // passes change neither, so an edit is told apart without copying the text.
+    struct EditState {
+        int length = -1;
+        int undoSteps = 0;
+        int redoSteps = 0;
+        bool commandAdded = false;
+    } m_editState;
+    QFutureWatcher<int> m_wordCountWatcher;
+    bool m_wordCountStale = false;
+    // What the file held when last read or written, kept as lengths and
+    // digests rather than copies: equality is all they are asked, and a copy
+    // of a long document and its text would cost three times its size.
+    struct KnownContents {
+        qsizetype size = 0;
+        QByteArray digest;
+        qsizetype textLength = 0;
+        QByteArray textDigest;
+    } m_known;
     bool m_hasKnownFileContents = false;
     bool m_autoSaveSuspended = false;
     bool m_autoSaveHeld = false;

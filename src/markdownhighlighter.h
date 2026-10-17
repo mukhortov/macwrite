@@ -13,7 +13,6 @@ public:
 
     void setTheme(bool darkMode, const QString &background, const QString &foreground,
                   const QString &accent, const QString &codeBackground);
-    void setSearch(const QString &query, int currentMatchStart);
     void refreshFont();
 
     struct Span {
@@ -57,7 +56,6 @@ private:
     void rebuildFormats();
     void highlightMarkers(const QString &text);
     void highlightInline(const QString &text);
-    void highlightSearch(const QString &text);
 
     bool m_darkMode = true;
     QString m_customBackground;
@@ -73,11 +71,4 @@ private:
     QTextCharFormat m_fenceFormat;
     QTextCharFormat m_quoteFormat;
     QTextCharFormat m_linkFormat;
-    QString m_searchQuery;
-    int m_currentMatchStart = -1;
-    // Moves with edits, so it still finds the block the current match was
-    // painted in after text above it changes.
-    QTextCursor m_currentMatch;
-    QTextCharFormat m_searchFormat;
-    QTextCharFormat m_currentSearchFormat;
 };

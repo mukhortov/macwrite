@@ -1,5 +1,6 @@
 #include <QtTest>
 #include <QFont>
+#include <QAbstractTextDocumentLayout>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextLayout>
@@ -14,13 +15,18 @@
 #include <QStandardPaths>
 #include <QClipboard>
 #include <QMimeData>
+#include <QJSValue>
 #include <QAction>
 #include <QMenuBar>
+#include <QRandomGenerator>
+
+#include <functional>
 #include "cli.h"
 
 #include "appeventfilter.h"
 #include "backend.h"
 #include "markdownhighlighter.h"
+#include "plaintextlayout.h"
 #include "windowmanager.h"
 
 // Counts QML "Binding loop detected" warnings while it is alive, forwarding
@@ -84,6 +90,124 @@ static bool chooseFromMenu(QObject *window, const QString &text) {
     QObject *command = menuCommand(window, text);
     return command && command->property("enabled").toBool()
         && QMetaObject::invokeMethod(command, "trigger");
+}
+
+// Text that exercises line breaking: wrapped paragraphs, words too long for a
+// line, tabs, right-to-left and unspaced scripts, line separators, emoji.
+static QString layoutSample() {
+    return QStringLiteral(
+        "# A heading for the sample\n"
+        "\n"
+        "A paragraph long enough to wrap over several lines at any of the widths "
+        "the tests use, with **bold**, *italic*, and `code` spans along the way, "
+        "so that the highlighter's formats change the widths of the words.\n"
+        "- a list item\n"
+        "  - a nested item that is also long enough to wrap onto a second line here\n"
+        "https://example.com/a/very/long/address/that/has/no/spaces/at/all/and/keeps/going/past/the/edge/of/any/line\n"
+        "\tTabbed\tcolumns\tline\n"
+        "مرحبا بالعالم، هذا سطر من اليمين إلى اليسار يكفي طوله ليلتف على أكثر من سطر واحد\n"
+        "שלום עולם mixed with English words in one line\n"
+        "日本語のテキストは単語の区切りがないので、どこでも折り返すことができます。日本語のテキストは単語の区切りがありません。\n"
+        "Emoji 😀🎉 in a line 👩‍👩‍👧‍👦\n"
+        "```\n"
+        "code fence line\n"
+        "```\n"
+        "A line with trailing spaces                                                                 \n"
+        "first part second part after a line separator\n"
+        "> a quote\n"
+        "\n"
+        "\n"
+        "Last line");
+}
+
+// Sets up a document the way TextEdit does, then fills it the way Write does.
+static void setUpLayoutDocument(QTextDocument *document, const QFont &font, qreal width,
+                                qreal margin, bool designMetrics) {
+    document->setDefaultFont(font);
+    document->setDocumentMargin(margin);
+    QTextOption option = document->defaultTextOption();
+    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    option.setUseDesignMetrics(designMetrics);
+    document->setDefaultTextOption(option);
+    document->setTextWidth(width);
+    // As TextEdit does, so an undo cannot take the margin back.
+    document->clearUndoRedoStacks();
+}
+
+static void fillLayoutDocument(QTextDocument *document, const QString &text) {
+    QTextBlockFormat format;
+    format.setLineHeight(140, QTextBlockFormat::ProportionalHeight);
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    cursor.setBlockFormat(format);
+    cursor.insertText(text);
+    cursor.endEditBlock();
+}
+
+static bool sameRect(const QRectF &a, const QRectF &b) {
+    return a.x() == b.x() && a.y() == b.y() && a.width() == b.width() && a.height() == b.height();
+}
+
+static QString describe(const QRectF &rect) {
+    return QStringLiteral("(%1, %2 %3x%4)").arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height());
+}
+
+// Where two documents with the same text are laid out differently, or an
+// empty string. With hit tests, points all over the page must find the same
+// position in both.
+static QString layoutDifference(QTextDocument *qt, QTextDocument *ours, bool hitTests) {
+    QAbstractTextDocumentLayout *expected = qt->documentLayout();
+    QAbstractTextDocumentLayout *actual = ours->documentLayout();
+    const QSizeF size = expected->documentSize();
+    if (size != actual->documentSize()) {
+        return QStringLiteral("document size %1x%2, Qt %3x%4")
+            .arg(actual->documentSize().width()).arg(actual->documentSize().height())
+            .arg(size.width()).arg(size.height());
+    }
+    if (qt->blockCount() != ours->blockCount())
+        return QStringLiteral("block count");
+    if (!sameRect(expected->frameBoundingRect(qt->rootFrame()), actual->frameBoundingRect(ours->rootFrame())))
+        return QStringLiteral("root frame");
+
+    for (QTextBlock a = qt->begin(), b = ours->begin(); a.isValid(); a = a.next(), b = b.next()) {
+        const QRectF expectedRect = expected->blockBoundingRect(a);
+        const QRectF actualRect = actual->blockBoundingRect(b);
+        if (!sameRect(expectedRect, actualRect)) {
+            return QStringLiteral("block %1 at %2, Qt %3")
+                .arg(a.blockNumber()).arg(describe(actualRect), describe(expectedRect));
+        }
+        if (a.layout()->position() != b.layout()->position())
+            return QStringLiteral("block %1 layout position").arg(a.blockNumber());
+        if (a.layout()->lineCount() != b.layout()->lineCount()) {
+            return QStringLiteral("block %1 has %2 lines, Qt %3").arg(a.blockNumber())
+                .arg(b.layout()->lineCount()).arg(a.layout()->lineCount());
+        }
+        for (int i = 0; i < a.layout()->lineCount(); ++i) {
+            const QTextLine x = a.layout()->lineAt(i);
+            const QTextLine y = b.layout()->lineAt(i);
+            if (x.position() != y.position() || x.textStart() != y.textStart()
+                    || x.textLength() != y.textLength() || x.width() != y.width()
+                    || x.naturalTextWidth() != y.naturalTextWidth())
+                return QStringLiteral("block %1 line %2").arg(a.blockNumber()).arg(i);
+        }
+    }
+
+    if (hitTests) {
+        for (qreal y = -9.3; y < size.height() + 12; y += 1.7) {
+            for (qreal x = -11.1; x < size.width() + 12; x += 19.3) {
+                for (const Qt::HitTestAccuracy accuracy : {Qt::FuzzyHit, Qt::ExactHit}) {
+                    const int want = expected->hitTest(QPointF(x, y), accuracy);
+                    const int got = actual->hitTest(QPointF(x, y), accuracy);
+                    if (want != got) {
+                        return QStringLiteral("hit test at %1,%2 (%3) found %4, Qt %5")
+                            .arg(x).arg(y).arg(accuracy == Qt::ExactHit ? "exact" : "fuzzy")
+                            .arg(got).arg(want);
+                    }
+                }
+            }
+        }
+    }
+    return {};
 }
 
 class WriteTest : public QObject {
@@ -168,6 +292,316 @@ private slots:
         QFont pointFont;
         pointFont.setPointSizeF(11.0);
         QCOMPARE(Backend::printFont(pointFont, 144.0).pointSizeF(), 11.0);
+    }
+
+    void showsTheCaretAfterOpeningFromTheOpenDialog() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("long.md"));
+        QByteArray contents;
+        for (int line = 0; line < 3000; ++line)
+            contents += "A line of text, number " + QByteArray::number(line) + "\n";
+        writeFile(path, contents);
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, mainQmlUrl());
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> object(component.create());
+        auto *window = qobject_cast<QQuickWindow *>(object.data());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *editor = window->findChild<QQuickItem *>(QStringLiteral("sourceEditor"));
+        QObject *searchField = window->findChild<QObject *>(QStringLiteral("searchField"));
+        QVERIFY(editor && searchField);
+        QMetaObject::invokeMethod(editor, "forceActiveFocus");
+        QQuickItem *caret = nullptr;
+        for (QQuickItem *child : editor->childItems()) {
+            if (child->width() == 1)
+                caret = child;
+        }
+        QVERIFY(caret);
+
+        // The file loads while the Open dialog still has the focus, and the
+        // view scrolls to the end of it.
+        QMetaObject::invokeMethod(searchField, "forceActiveFocus");
+        QVERIFY(!editor->property("cursorVisible").toBool());
+        backend.open(QUrl::fromLocalFile(path));
+        QTRY_VERIFY(window->findChild<QObject *>(QStringLiteral("editorScroll"))
+                        ->property("contentY").toReal() > 0);
+
+        // Back in the editor, the caret shows without a scroll or a click.
+        QMetaObject::invokeMethod(editor, "forceActiveFocus");
+        QTRY_VERIFY(editor->property("cursorVisible").toBool());
+        QTRY_VERIFY(caret->isVisible());
+        backend.discardRecovery();
+    }
+
+    void restylesALongDocumentAtOnce() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("long.md"));
+        QByteArray contents;
+        for (int line = 0; line < 20000; ++line)
+            contents += "Some `code` and **bold** text on line " + QByteArray::number(line) + "\n";
+        writeFile(path, contents);
+
+        Backend backend;
+        QScopedPointer<QObject> editor(makeEditor(backend));
+        QVERIFY(editor);
+        editor->setProperty("width", 600);
+        backend.open(QUrl::fromLocalFile(path));
+        auto *quickDocument = qobject_cast<QQuickTextDocument *>(
+            editor->property("textDocument").value<QObject *>());
+        QTextDocument *document = quickDocument->textDocument();
+        const qreal height = document->documentLayout()->documentSize().height();
+        const auto codeBackground = [document]() {
+            for (const QTextLayout::FormatRange &range : document->lastBlock().previous().layout()->formats()) {
+                if (range.format.hasProperty(QTextFormat::BackgroundBrush))
+                    return range.format.background().color();
+            }
+            return QColor();
+        };
+        const QColor darkCode = codeBackground();
+        QVERIFY(darkCode.isValid());
+
+        // Each restyled line is laid out on its own, not again with every line
+        // below it, which over this many lines would take many seconds.
+        QElapsedTimer timer;
+        timer.start();
+        backend.setDarkMode(false);
+        QVERIFY2(timer.elapsed() < 3000, qPrintable(QString::number(timer.elapsed())));
+        QVERIFY(codeBackground().isValid() && codeBackground() != darkCode);
+        QCOMPARE(document->documentLayout()->documentSize().height(), height);
+    }
+
+    // The layout Write installs puts every line exactly where Qt's own would,
+    // and finds the same character under every point.
+    void plainTextLayoutMatchesQtsLayout() {
+        QFont system;
+        system.setPixelSize(18);
+        QFont mono(QStringLiteral("Menlo"));
+        mono.setPixelSize(15);
+        mono.setStyleStrategy(QFont::PreferNoShaping);
+        QFont serif(QStringLiteral("Georgia"));
+        serif.setPointSizeF(17.5);
+
+        int compared = 0;
+        for (const QFont &font : {system, mono, serif}) {
+            for (const qreal width : {300.0, 517.3, 900.0}) {
+                for (const qreal margin : {0.0, 4.0}) {
+                    for (const bool designMetrics : {false, true}) {
+                        QTextDocument qt;
+                        QTextDocument ours;
+                        ours.setDocumentLayout(new PlainTextLayout(&ours));
+                        for (QTextDocument *document : {&qt, &ours}) {
+                            setUpLayoutDocument(document, font, width, margin, designMetrics);
+                            new MarkdownHighlighter(document);
+                            fillLayoutDocument(document, layoutSample());
+                        }
+                        const QString difference = layoutDifference(&qt, &ours, compared++ % 4 == 0);
+                        QVERIFY2(difference.isEmpty(),
+                                 qPrintable(QStringLiteral("%1 at width %2, margin %3, design metrics %4: %5")
+                                                .arg(font.family()).arg(width).arg(margin)
+                                                .arg(designMetrics).arg(difference)));
+                    }
+                }
+            }
+        }
+    }
+
+    void plainTextLayoutMatchesQtsLayoutWithBlockFormats() {
+        QFont font;
+        font.setPixelSize(16);
+        QTextDocument qt;
+        QTextDocument ours;
+        ours.setDocumentLayout(new PlainTextLayout(&ours));
+        for (QTextDocument *document : {&qt, &ours}) {
+            setUpLayoutDocument(document, font, 420, 4, false);
+            fillLayoutDocument(document, layoutSample());
+            int index = 0;
+            for (QTextBlock block = document->begin(); block.isValid(); block = block.next(), ++index) {
+                QTextBlockFormat format;
+                if (index % 3 == 0)
+                    format.setTopMargin(6);
+                if (index % 4 == 0)
+                    format.setBottomMargin(4.5);
+                if (index % 5 == 0)
+                    format.setIndent(1);
+                if (index % 2 == 0)
+                    format.setTextIndent(12.3);
+                if (index % 7 == 0)
+                    format.setAlignment(Qt::AlignHCenter);
+                if (index % 7 == 1)
+                    format.setAlignment(Qt::AlignRight);
+                if (index % 6 == 0)
+                    format.setLineHeight(80, QTextBlockFormat::ProportionalHeight);
+                if (index % 6 == 3)
+                    format.setLineHeight(30, QTextBlockFormat::MinimumHeight);
+                if (index % 8 == 5)
+                    format.setRightMargin(25);
+                QTextCursor(block).mergeBlockFormat(format);
+            }
+        }
+        const QString difference = layoutDifference(&qt, &ours, true);
+        QVERIFY2(difference.isEmpty(), qPrintable(difference));
+    }
+
+    // Each edit lays out only the lines it touched, and every line still ends
+    // up where Qt's layout, which lays out from the edit down, puts it.
+    void plainTextLayoutFollowsEditsLikeQt() {
+        QFont font;
+        font.setPixelSize(17);
+        QTextDocument qt;
+        QTextDocument ours;
+        ours.setDocumentLayout(new PlainTextLayout(&ours));
+        QString text;
+        for (int copy = 0; copy < 3; ++copy)
+            text += layoutSample() + QLatin1Char('\n');
+        for (QTextDocument *document : {&qt, &ours}) {
+            setUpLayoutDocument(document, font, 480, 0, false);
+            new MarkdownHighlighter(document);
+            fillLayoutDocument(document, text);
+        }
+        QVERIFY(layoutDifference(&qt, &ours, false).isEmpty());
+
+        const QStringList insertions = {
+            QStringLiteral("a"), QStringLiteral("word "), QStringLiteral("\n"),
+            QStringLiteral("two\nlines"), QStringLiteral("\n\n"), QStringLiteral("```"),
+            QStringLiteral("# "), QStringLiteral("مرحبا "), QStringLiteral("\t"), QStringLiteral("**"),
+            QStringLiteral("averyveryveryveryveryveryveryveryveryveryveryveryverylongword")};
+        QRandomGenerator random(20261017);
+        for (int step = 0; step < 400; ++step) {
+            const int length = qt.characterCount() - 1;
+            const int position = int(random.bounded(length + 1));
+            const int end = qMin(length, position + int(random.bounded(60)));
+            const QString insertion = insertions.at(random.bounded(int(insertions.size())));
+            const int choice = int(random.bounded(100));
+            const auto select = [position, end](QTextDocument *document) {
+                QTextCursor cursor(document);
+                cursor.setPosition(position);
+                cursor.setPosition(end, QTextCursor::KeepAnchor);
+                return cursor;
+            };
+            std::function<void(QTextDocument *)> edit;
+            QString action;
+            if (choice < 40) {
+                action = QStringLiteral("insert %1 at %2").arg(insertion).arg(position);
+                edit = [&](QTextDocument *document) {
+                    QTextCursor cursor(document);
+                    cursor.setPosition(position);
+                    cursor.insertText(insertion);
+                };
+            } else if (choice < 62) {
+                action = QStringLiteral("remove %1 to %2").arg(position).arg(end);
+                edit = [&](QTextDocument *document) { select(document).removeSelectedText(); };
+            } else if (choice < 72) {
+                action = QStringLiteral("replace %1 to %2 with %3").arg(position).arg(end).arg(insertion);
+                edit = [&](QTextDocument *document) { select(document).insertText(insertion); };
+            } else if (choice < 80) {
+                QTextBlockFormat format;
+                format.setLineHeight(100 + 20 * random.bounded(3), QTextBlockFormat::ProportionalHeight);
+                if (random.bounded(2))
+                    format.setBottomMargin(random.bounded(8.0));
+                // Lines that do not wrap can be wider than the page.
+                if (random.bounded(3) == 0)
+                    format.setNonBreakableLines(random.bounded(2));
+                action = QStringLiteral("format blocks %1 to %2").arg(position).arg(end);
+                edit = [&, format](QTextDocument *document) { select(document).mergeBlockFormat(format); };
+            } else if (choice < 86) {
+                QTextCharFormat format;
+                format.setFontPointSize(10 + random.bounded(20));
+                action = QStringLiteral("resize text %1 to %2").arg(position).arg(end);
+                edit = [&, format](QTextDocument *document) { select(document).mergeCharFormat(format); };
+            } else if (choice < 93) {
+                action = QStringLiteral("undo");
+                edit = [](QTextDocument *document) { document->undo(); };
+            } else if (choice < 97) {
+                const qreal width = 200 + random.bounded(700.0);
+                action = QStringLiteral("width %1").arg(width);
+                edit = [width](QTextDocument *document) { document->setTextWidth(width); };
+            } else {
+                const qreal margin = random.bounded(8);
+                action = QStringLiteral("margin %1").arg(margin);
+                // TextEdit sets its margin before there is anything to undo,
+                // and Qt's layout does not follow an undo that takes it back.
+                edit = [margin](QTextDocument *document) {
+                    document->setDocumentMargin(margin);
+                    document->clearUndoRedoStacks();
+                };
+            }
+            edit(&qt);
+            edit(&ours);
+            const QString difference = layoutDifference(&qt, &ours, step % 50 == 49);
+            QVERIFY2(difference.isEmpty(),
+                     qPrintable(QStringLiteral("step %1, %2: %3").arg(step).arg(action, difference)));
+        }
+    }
+
+    // Typing near the top of a long document lays out the line it changed,
+    // not every line below it.
+    void typingInALongDocumentLaysOutOnlyTheEditedLine() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("long.md"));
+        QByteArray contents;
+        for (int line = 0; line < 50000; ++line)
+            contents += "Line " + QByteArray::number(line) + " has words enough to wrap once at this width, or so.\n";
+        writeFile(path, contents);
+
+        Backend backend;
+        QScopedPointer<QObject> editor(makeEditor(backend));
+        QVERIFY(editor);
+        editor->setProperty("width", 400);
+        backend.open(QUrl::fromLocalFile(path));
+        auto *quickDocument = qobject_cast<QQuickTextDocument *>(
+            editor->property("textDocument").value<QObject *>());
+        QTextDocument *document = quickDocument->textDocument();
+        auto *layout = qobject_cast<PlainTextLayout *>(document->documentLayout());
+        QVERIFY(layout);
+        const qreal height = layout->documentSize().height();
+
+        QTextCursor cursor(document);
+        cursor.setPosition(4);
+        QElapsedTimer timer;
+        timer.start();
+        for (int key = 0; key < 200; ++key) {
+            cursor.insertText(QStringLiteral("x"));
+            QCOMPARE(layout->lastLayoutBlockCount(), 1);
+        }
+        cursor.insertText(QStringLiteral("\n"));
+        QCOMPARE(layout->lastLayoutBlockCount(), 2);
+        QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
+        QVERIFY(layout->documentSize().height() > height);
+
+        // The last line of text is still where the editor draws it and finds it.
+        const QTextBlock lastLine = document->lastBlock().previous();
+        const int last = lastLine.position() + lastLine.length() - 1;
+        QRectF rect;
+        QVERIFY(QMetaObject::invokeMethod(editor.data(), "positionToRectangle",
+                                          Q_RETURN_ARG(QRectF, rect), Q_ARG(int, last)));
+        QCOMPARE(rect.bottom(), layout->blockBoundingRect(lastLine).bottom());
+        int found = -1;
+        QVERIFY(QMetaObject::invokeMethod(editor.data(), "positionAt", Q_RETURN_ARG(int, found),
+                                          Q_ARG(qreal, rect.left() + 1), Q_ARG(qreal, rect.center().y())));
+        QCOMPARE(found, last);
+    }
+
+    void findsLinesWithoutCopyingTheText() {
+        Backend backend;
+        QScopedPointer<QObject> editor(makeEditor(backend));
+        QVERIFY(editor);
+        const QString text = QStringLiteral("\nfirst\n\n  - item\nlast");
+        editor->setProperty("text", text);
+
+        // The same answers the editor's text gave, at every position.
+        for (int position = 0; position <= text.size(); ++position) {
+            QCOMPARE(backend.lineStart(position),
+                     position == 0 ? 0 : int(text.lastIndexOf(QLatin1Char('\n'), position - 1)) + 1);
+            QCOMPARE(backend.lineEnd(position), int(text.indexOf(QLatin1Char('\n'), position)));
+        }
     }
 
     void keepsNotoFromCrowdingTheFontList() {
@@ -341,42 +775,42 @@ private slots:
         QCOMPARE(editor->property("text").toString(), QStringLiteral("foo barxy foo"));
         QCOMPARE(window->property("searchMatches").toList().size(), 2);
 
-        // The current match's highlight leaves its old block even when text
-        // above it is deleted.
-        auto *quickDocument = qobject_cast<QQuickTextDocument *>(
-            editor->property("textDocument").value<QObject *>());
-        QVERIFY(quickDocument);
-        QTextDocument *document = quickDocument->textDocument();
-        const auto matchBackground = [document](int blockNumber) {
-            const QTextBlock block = document->findBlockByNumber(blockNumber);
-            for (const QTextLayout::FormatRange &range : block.layout()->formats()) {
-                if (range.start == 0 && range.format.hasProperty(QTextFormat::BackgroundBrush))
-                    return range.format.background().color();
+        // The current match is drawn apart from the others, and the mark
+        // follows it when text above it is deleted.
+        const auto drawnAs = [window](int start) {
+            QVariant matches = window->property("visibleSearchMatches");
+            if (matches.metaType() == QMetaType::fromType<QJSValue>())
+                matches = matches.value<QJSValue>().toVariant();
+            for (const QVariant &match : matches.toList()) {
+                const QVariantMap drawn = match.toMap();
+                if (drawn.value(QStringLiteral("start")).toInt() == start)
+                    return drawn.value(QStringLiteral("current")).toBool()
+                        ? QStringLiteral("current") : QStringLiteral("other");
             }
-            return QColor();
+            return QString();
         };
         editor->setProperty("text", QStringLiteral("long text\nfoo\nfoo"));
         searchField->setProperty("text", QStringLiteral("x"));
         searchField->setProperty("text", QStringLiteral("foo"));
         QMetaObject::invokeMethod(window, "moveSearch", Q_ARG(QVariant, 1));
-        const QColor current = matchBackground(2);
-        const QColor other = matchBackground(1);
-        QVERIFY(current.isValid() && other.isValid() && current != other);
+        QCOMPARE(drawnAs(14), QStringLiteral("current"));
+        QCOMPARE(drawnAs(10), QStringLiteral("other"));
         QMetaObject::invokeMethod(editor, "remove", Q_ARG(int, 0), Q_ARG(int, 10));
         QCOMPARE(window->property("searchMatches").toList().size(), 2);
         QCOMPARE(window->property("searchMatchIndex").toInt(), 0);
-        QCOMPARE(matchBackground(0), current);
-        QCOMPARE(matchBackground(1), other);
+        QCOMPARE(drawnAs(0), QStringLiteral("current"));
+        QCOMPARE(drawnAs(4), QStringLiteral("other"));
 
         // Nor does it stay behind when another match moves into its offset.
         editor->setProperty("text", QStringLiteral("foo\nab\nfoo"));
         QMetaObject::invokeMethod(window, "moveSearch", Q_ARG(QVariant, 1));
-        QCOMPARE(matchBackground(2), current);
+        QCOMPARE(drawnAs(7), QStringLiteral("current"));
         QMetaObject::invokeMethod(editor, "insert", Q_ARG(int, 0), Q_ARG(QString, QStringLiteral("abcdefg")));
         QCOMPARE(window->property("searchMatches").toList().first().toInt(), 7);
-        QCOMPARE(matchBackground(2), other);
+        QCOMPARE(drawnAs(7), QStringLiteral("current"));
+        QCOMPARE(drawnAs(14), QStringLiteral("other"));
 
-        // Matches are found where the highlighter finds them, even past a
+        // Matches are found at the document's own offsets, even past a
         // character whose lowercase is longer.
         editor->setProperty("text", QString::fromUtf8("\xC4\xB0 ab"));
         searchField->setProperty("text", QStringLiteral("ab"));
