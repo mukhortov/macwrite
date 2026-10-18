@@ -12,6 +12,7 @@
 
 #include "backend.h"
 #include "markdownedits.h"
+#include "markdownhighlighter.h"
 #include "plaintextlayout.h"
 
 namespace {
@@ -37,6 +38,8 @@ MarkdownEditor::MarkdownEditor(Backend *backend, QWidget *parent)
     const int caretWidth = cursorWidth();
     document()->setDocumentMargin(0);
     m_layout = new PlainTextLayout(document());
+    // A wrapped list item, quote or heading continues under its text.
+    m_layout->setHangingIndentRule(&MarkdownHighlighter::hangingIndentLength);
     document()->setDocumentLayout(m_layout);
     setCursorWidth(caretWidth);
     document()->clearUndoRedoStacks();

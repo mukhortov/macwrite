@@ -2,6 +2,7 @@
 
 #include <QRegularExpression>
 #include <QSyntaxHighlighter>
+#include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextCursor>
 
@@ -40,6 +41,10 @@ public:
     // to style content and hide markers, and the editor uses it (via
     // Backend::hiddenRangesAt) to skip the caret over the hidden markers.
     static QList<InlineMarkup> inlineMarkup(const QString &text);
+    // How many characters open the block before its text: a heading's
+    // hashes, a quote's ">", a list's marker and task box, and the spaces
+    // around them. Its wrapped lines line up after them. None in fenced code.
+    static int hangingIndentLength(const QTextBlock &block);
     static QString linkUrlAt(const QString &text, int position);
 
     // Inline code spans, backticks included.

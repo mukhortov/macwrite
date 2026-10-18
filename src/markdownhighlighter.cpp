@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextDocument>
 
@@ -47,7 +48,9 @@ void MarkdownHighlighter::rebuildFormats() {
         : (m_darkMode ? QColor(QStringLiteral("#eeeeee")) : QColor(QStringLiteral("#222324")));
     const QColor link = !m_customAccent.isEmpty() ? QColor(m_customAccent)
         : (m_darkMode ? QColor(QStringLiteral("#5584aa")) : QColor(QStringLiteral("#2077b2")));
-    const QColor quote = marker;
+    // Quieter than the text, but meant to be read, unlike the markers.
+    const QColor quote = m_darkMode ? QColor(QStringLiteral("#909191"))
+                                    : QColor(QStringLiteral("#6b6e72"));
 
     m_markerFormat = QTextCharFormat();
     m_markerFormat.setForeground(marker);
@@ -167,11 +170,14 @@ void MarkdownHighlighter::highlightMarkers(const QString &text) {
     }
 
     if (firstChar == QLatin1Char('>')) {
-        static const QRegularExpression quoteRe(QStringLiteral("^(\\s*>+\\s?)(.*)$"));
+        // Every ">" of a nested quote, as "> >" or ">>", is a marker, and so
+        // is a list's marker inside the quote.
+        static const QRegularExpression quoteRe(
+            QStringLiteral("^((?:\\s*>)+\\s?)((?:[-+*]|\\d+[.)])\\s+)?(.*)$"));
         const QRegularExpressionMatch quote = quoteRe.match(text);
         if (quote.hasMatch()) {
-            setFormat(0, quote.capturedLength(1), m_markerFormat);
-            setFormat(quote.capturedStart(2), quote.capturedLength(2), m_quoteFormat);
+            setFormat(0, quote.capturedLength(1) + quote.capturedLength(2), m_markerFormat);
+            setFormat(quote.capturedStart(3), quote.capturedLength(3), m_quoteFormat);
         }
     }
 
@@ -410,4 +416,23 @@ QString MarkdownHighlighter::linkUrlAt(const QString &text, int position) {
             .replace(escapedPunctuation, QStringLiteral("\\1"));
     }
     return {};
+}
+
+int MarkdownHighlighter::hangingIndentLength(const QTextBlock &block) {
+    // A block's state says what follows its line, so a fence line, opening
+    // or closing, is code too.
+    if (block.userState() >= InsideFence || block.previous().userState() >= InsideFence)
+        return 0;
+
+    const QString text = block.text();
+    static const QRegularExpression heading(QStringLiteral("^#{1,6}[ \\t]+"));
+    const QRegularExpressionMatch headingMatch = heading.match(text);
+    if (headingMatch.hasMatch())
+        return int(headingMatch.capturedLength());
+
+    // Quotes, nested or not, then a list marker with its task box, if any.
+    static const QRegularExpression opening(QStringLiteral(
+        "^((?:[ \\t]{0,3}>[ \\t]?)+)?([ \\t]*(?:[-+*]|\\d{1,9}[.)])[ \\t]+(?:\\[[ xX]\\][ \\t]+)?)?"));
+    const QRegularExpressionMatch openingMatch = opening.match(text);
+    return int(openingMatch.capturedLength(1) + openingMatch.capturedLength(2));
 }

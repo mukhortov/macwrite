@@ -105,6 +105,11 @@ std::pair<int, int> PlainTextLayout::layoutBlock(const QTextBlock &block) const 
     const int lineLeft = m_frame.left + leftMargin;
     const int lineRight = m_frame.left + m_frame.contentsWidth - rightMargin;
     const int lineHeightType = format.lineHeightType();
+    // Wrapped lines start where the block's opening characters end, measured
+    // on its first line, so they line up whatever those characters are.
+    const int hangingPrefix =
+        m_hangingIndentRule && direction == Qt::LeftToRight ? m_hangingIndentRule(block) : 0;
+    int hanging = 0;
     int y = 0;
     int bottom = 0;
     int widest = 0;
@@ -119,6 +124,7 @@ std::pair<int, int> PlainTextLayout::layoutBlock(const QTextBlock &block) const 
 
         int left = lineLeft;
         int right = lineRight;
+        const bool first = firstLine;
         if (firstLine) {
             const int textIndent = fixed(format.textIndent());
             if (direction == Qt::LeftToRight)
@@ -126,6 +132,8 @@ std::pair<int, int> PlainTextLayout::layoutBlock(const QTextBlock &block) const 
             else
                 right -= textIndent;
             firstLine = false;
+        } else {
+            left += hanging;
         }
 
         line.setLineWidth(real(right - left));
@@ -143,6 +151,10 @@ std::pair<int, int> PlainTextLayout::layoutBlock(const QTextBlock &block) const 
                 }
             }
         }
+
+        // Never so far that the wrapped lines have less than half the column.
+        if (first && hangingPrefix > 0)
+            hanging = qBound(0, fixed(line.cursorToX(hangingPrefix)), (lineRight - lineLeft) / 2);
 
         // getLineHeightParams in qtextdocumentlayout.cpp.
         const qreal height = line.height();
@@ -573,4 +585,13 @@ void PlainTextLayout::setPadding(const QMarginsF &padding) {
 QMarginsF PlainTextLayout::padding() const {
     return QMarginsF(real(m_padding.left), real(m_padding.top),
                      real(m_padding.right), real(m_padding.bottom));
+}
+
+void PlainTextLayout::setHangingIndentRule(HangingIndentRule rule) {
+    m_hangingIndentRule = std::move(rule);
+    if (m_laidOut && canLayout()) {
+        layoutAll();
+        updateSize();
+        emit update(QRectF(0, 0, qreal(INT_MAX), qreal(INT_MAX)));
+    }
 }

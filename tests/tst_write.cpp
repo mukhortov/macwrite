@@ -2972,6 +2972,109 @@ private slots:
         QCOMPARE(MacWindow::titleBarColour(&fixture.window).name(), QStringLiteral("#ffffff"));
     }
 
+    // A wrapped list item, quote or heading continues under its text, not
+    // under its marker, as the hanging indent of a block format would put it.
+    void hangsWrappedLinesUnderTheirText() {
+        QFont font;
+        font.setPixelSize(16);
+        const QString words = QStringLiteral(" words enough to wrap this line at least once at this width, and then a few more");
+        const QStringList lines = {
+            QStringLiteral("- item") + words,
+            QStringLiteral("12. numbered") + words,
+            QStringLiteral("- [ ] task") + words,
+            QStringLiteral("  * nested") + words,
+            QStringLiteral("> quoted") + words,
+            QStringLiteral("> - quoted item") + words,
+            QStringLiteral("## Heading") + words,
+            QStringLiteral("Plain paragraph") + words,
+        };
+        const QList<int> prefixes = {2, 4, 6, 4, 2, 4, 3, 0};
+        QTextDocument qt;
+        QTextDocument ours;
+        auto *layout = new PlainTextLayout(&ours);
+        ours.setDocumentLayout(layout);
+        layout->setHangingIndentRule([&prefixes](const QTextBlock &block) {
+            return prefixes.value(block.blockNumber());
+        });
+        for (QTextDocument *document : {&qt, &ours}) {
+            setUpLayoutDocument(document, font, 300, 0, false);
+            fillLayoutDocument(document, lines.join(QLatin1Char('\n')));
+        }
+
+        // Qt's layout, given the same indent as a block margin that its first
+        // line takes back, lays every line where ours does.
+        int index = 0;
+        for (QTextBlock block = ours.begin(); block.isValid(); block = block.next(), ++index) {
+            QVERIFY(block.layout()->lineCount() > 1);
+            const QTextLine first = block.layout()->lineAt(0);
+            const QTextLine second = block.layout()->lineAt(1);
+            const qreal indent = prefixes.at(index) ? first.cursorToX(prefixes.at(index)) - first.x() : 0;
+            QCOMPARE(second.x(), first.x() + indent);
+            QTextBlockFormat format;
+            format.setLeftMargin(indent);
+            format.setTextIndent(-indent);
+            QTextCursor(qt.findBlockByNumber(index)).mergeBlockFormat(format);
+        }
+        const QString difference = layoutDifference(&qt, &ours, true);
+        QVERIFY2(difference.isEmpty(), qPrintable(difference));
+    }
+
+    // The editor hangs lists, quotes and headings, but not fenced code.
+    void hangsListsAndQuotesInTheEditor() {
+        EditorFixture fixture;
+        fixture.window.resize(520, 600);
+        QVERIFY(fixture.show());
+        const QString words = QStringLiteral(" words enough to wrap this line at least once at this width, and then a few more");
+        fixture.load(QStringLiteral("1. Status bar") + words + QStringLiteral("\n```\n- code") + words
+                     + QStringLiteral("\n```\n> quote") + words, 0);
+        const auto indentOf = [&fixture](int blockNumber, int prefix) {
+            const QTextLayout *lines = fixture.editor->document()->findBlockByNumber(blockNumber).layout();
+            return std::pair{lines->lineAt(1).x() - lines->lineAt(0).x(),
+                             lines->lineAt(0).cursorToX(prefix) - lines->lineAt(0).x()};
+        };
+        const auto [listHang, listPrefix] = indentOf(0, 3);
+        QVERIFY(listHang > 0);
+        QCOMPARE(listHang, listPrefix);
+        QCOMPARE(indentOf(2, 2).first, 0.0);
+        const auto [quoteHang, quotePrefix] = indentOf(4, 2);
+        QVERIFY(quoteHang > 0);
+        QCOMPARE(quoteHang, quotePrefix);
+
+        // The caret and a click on a wrapped line land under the text.
+        const QTextBlock list = fixture.editor->document()->firstBlock();
+        QTextCursor onSecondLine(fixture.editor->document());
+        onSecondLine.setPosition(list.position() + list.layout()->lineAt(1).textStart());
+        const QRect caret = fixture.editor->cursorRect(onSecondLine);
+        QCOMPARE(fixture.editor->cursorForPosition(caret.center() + QPoint(1, 0)).position(),
+                 onSecondLine.position());
+    }
+
+    // A quote reads quieter than the text around it, but reads: its words are
+    // a muted text colour, and only its markers, every ">" and a list's marker
+    // inside it, take the faint colour hidden markers have.
+    void quotesReadClearlyAndMarkTheirMarkers() {
+        const QColor marker(QStringLiteral("#4f525a"));
+        const QColor quote(QStringLiteral("#909191"));
+        const auto foreground = [](const QTextCharFormat &format) {
+            return format.foreground().color().name();
+        };
+
+        const QString nested = QStringLiteral("> > nested words");
+        const QList<QTextCharFormat> nestedFormats = highlightedFormats(nested);
+        for (int i = 0; i < 4; ++i)
+            QCOMPARE(foreground(nestedFormats.at(i)), marker.name());
+        for (int i = 4; i < nested.size(); ++i) {
+            QCOMPARE(foreground(nestedFormats.at(i)), quote.name());
+            QVERIFY(nestedFormats.at(i).fontItalic());
+        }
+
+        const QString listed = QStringLiteral("> - item");
+        const QList<QTextCharFormat> listedFormats = highlightedFormats(listed);
+        for (int i = 0; i < 4; ++i)
+            QCOMPARE(foreground(listedFormats.at(i)), marker.name());
+        QCOMPARE(foreground(listedFormats.at(4)), quote.name());
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());

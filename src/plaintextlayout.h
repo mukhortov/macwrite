@@ -6,6 +6,7 @@
 #include <QPointF>
 #include <QSizeF>
 
+#include <functional>
 #include <utility>
 
 class QTextLayout;
@@ -44,6 +45,12 @@ public:
     // it could a root frame margin.
     void setPadding(const QMarginsF &padding);
     QMarginsF padding() const;
+
+    // How many characters open a block before its text, such as a list's
+    // marker; its wrapped lines line up after them. Asked of each block as it
+    // is laid out; none hang by default.
+    using HangingIndentRule = std::function<int(const QTextBlock &)>;
+    void setHangingIndentRule(HangingIndentRule rule);
 
     int cursorWidth() const { return m_cursorWidth; }
     void setCursorWidth(int width) { m_cursorWidth = width; }
@@ -102,6 +109,7 @@ private:
         int bottom = 0;
     } m_padding;
     int m_cursorWidth = 1;
+    HangingIndentRule m_hangingIndentRule;
     bool m_laidOut = false;
     // Each block's own height and widest line, and in the tree its height
     // plus the margin above it.
