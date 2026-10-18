@@ -11,12 +11,38 @@
 #include <QUrl>
 #include <QVariantList>
 #include <memory>
+#include <optional>
 
 class MarkdownHighlighter;
 class QFont;
 class QTextDocument;
 class QWindow;
 class QLockFile;
+
+// A stretch of the document, in positions.
+struct TextRange {
+    int start = 0;
+    int end = 0;
+};
+
+// An emphasis span: its markers from start to end, the text between them,
+// and where the visible text ends before markers nested inside closing with it.
+struct EmphasisSpan {
+    int start = 0;
+    int end = 0;
+    int contentStart = 0;
+    int contentEnd = 0;
+    int textEnd = 0;
+};
+
+// Where a window opens; -1 leaves the place to the system.
+struct WindowGeometry {
+    int x = -1;
+    int y = -1;
+    int width = 1280;
+    int height = 820;
+    bool maximized = false;
+};
 
 class Backend : public QObject {
     Q_OBJECT
@@ -72,7 +98,9 @@ public:
     static QString suggestedFileName(const QString &text);
     static QFont printFont(const QFont &editorFont, qreal screenDpi);
 
-    Q_INVOKABLE void attachDocument(QObject *textDocument);
+    void attachDocument(QTextDocument *document);
+    // For the QML interface, until it goes.
+    Q_INVOKABLE void attachQuickDocument(QObject *textDocument);
     Q_INVOKABLE void openDialog();
     Q_INVOKABLE void open(const QUrl &url);
     void openOrStartFile(const QUrl &url);
@@ -98,16 +126,19 @@ public:
     Q_INVOKABLE QString clipboardUrl() const;
     Q_INVOKABLE QString clipboardText() const;
     Q_INVOKABLE bool editorTextChanged();
-    Q_INVOKABLE QVariantList hiddenRangesAt(int position) const;
+    QList<TextRange> hiddenRangesAt(int position) const;
+    Q_INVOKABLE QVariantList qmlHiddenRangesAt(int position) const;
     Q_INVOKABLE QString linkUrlAt(int position) const;
-    Q_INVOKABLE QVariantMap emphasisSpanAt(int position, const QString &marker) const;
+    std::optional<EmphasisSpan> emphasisSpanAt(int position, const QString &marker) const;
+    Q_INVOKABLE QVariantMap qmlEmphasisSpanAt(int position, const QString &marker) const;
     Q_INVOKABLE int cursorPositionStep(int position, int direction) const;
     Q_INVOKABLE QList<int> searchMatches(const QString &query) const;
     Q_INVOKABLE void replaceRange(int start, int end, const QString &text);
     Q_INVOKABLE bool insideFence(int position) const;
     Q_INVOKABLE int lineStart(int position) const;
     Q_INVOKABLE int lineEnd(int position) const;
-    Q_INVOKABLE QVariantMap windowGeometry() const;
+    WindowGeometry windowGeometry() const;
+    Q_INVOKABLE QVariantMap qmlWindowGeometry() const;
     void saveWindowGeometry(int x, int y, int width, int height, bool maximized);
     Q_INVOKABLE void documentFontChanged();
 

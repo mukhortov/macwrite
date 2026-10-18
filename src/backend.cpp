@@ -298,9 +298,24 @@ void Backend::setTextScale(qreal scale) {
     emit textScaleChanged();
 }
 
-void Backend::attachDocument(QObject *textDocument) {
+void Backend::attachQuickDocument(QObject *textDocument) {
     auto *quickDocument = qobject_cast<QQuickTextDocument *>(textDocument);
     if (!quickDocument || !quickDocument->textDocument()) {
+        setStatus(QStringLiteral("Could not attach the Markdown renderer."));
+        return;
+    }
+
+    // TextEdit builds its text for drawing only where its viewport shows it
+    // once it observes the viewport, but it turns that on only for text set
+    // through its `text` property. Documents arrive here instead, so without
+    // this every keystroke rebuilds the whole document's text.
+    if (auto *editor = qobject_cast<QQuickItem *>(quickDocument->parent()))
+        editor->setFlag(QQuickItem::ItemObservesViewport);
+    attachDocument(quickDocument->textDocument());
+}
+
+void Backend::attachDocument(QTextDocument *document) {
+    if (!document) {
         setStatus(QStringLiteral("Could not attach the Markdown renderer."));
         return;
     }
@@ -308,13 +323,7 @@ void Backend::attachDocument(QObject *textDocument) {
     if (m_highlighter)
         delete m_highlighter.data();
 
-    m_document = quickDocument->textDocument();
-    // TextEdit builds its text for drawing only where its viewport shows it
-    // once it observes the viewport, but it turns that on only for text set
-    // through its `text` property. Documents arrive here instead, so without
-    // this every keystroke rebuilds the whole document's text.
-    if (auto *editor = qobject_cast<QQuickItem *>(quickDocument->parent()))
-        editor->setFlag(QQuickItem::ItemObservesViewport);
+    m_document = document;
     // Qt's own layout moves every line below an edit, which in a long
     // document is most of the time a keystroke takes.
     if (!qobject_cast<PlainTextLayout *>(m_document->documentLayout()))
@@ -602,8 +611,8 @@ bool Backend::editorTextChanged() {
     return true;
 }
 
-QVariantList Backend::hiddenRangesAt(int position) const {
-    QVariantList ranges;
+QList<TextRange> Backend::hiddenRangesAt(int position) const {
+    QList<TextRange> ranges;
     if (!m_document)
         return ranges;
 
@@ -630,16 +639,23 @@ QVariantList Backend::hiddenRangesAt(int position) const {
     }
     std::sort(spans.begin(), spans.end());
 
-    for (const auto &span : spans) {
-        ranges.append(QVariantMap{{QStringLiteral("start"), span.first},
-                                  {QStringLiteral("end"), span.second}});
+    for (const auto &span : spans)
+        ranges.append({span.first, span.second});
+    return ranges;
+}
+
+QVariantList Backend::qmlHiddenRangesAt(int position) const {
+    QVariantList ranges;
+    for (const TextRange &range : hiddenRangesAt(position)) {
+        ranges.append(QVariantMap{{QStringLiteral("start"), range.start},
+                                  {QStringLiteral("end"), range.end}});
     }
     return ranges;
 }
 
 // The emphasis span of the marker's kind that the caret sits in or against,
 // in document positions, so a toggle with nothing selected can act on it.
-QVariantMap Backend::emphasisSpanAt(int position, const QString &marker) const {
+std::optional<EmphasisSpan> Backend::emphasisSpanAt(int position, const QString &marker) const {
     if (!m_document)
         return {};
 
@@ -677,13 +693,21 @@ QVariantMap Backend::emphasisSpanAt(int position, const QString &marker) const {
             }
         }
         const int base = block.position();
-        return {{QStringLiteral("start"), base + start},
-                {QStringLiteral("end"), base + end},
-                {QStringLiteral("contentStart"), base + item.content.start},
-                {QStringLiteral("contentEnd"), base + contentEnd},
-                {QStringLiteral("textEnd"), base + textEnd}};
+        return EmphasisSpan{base + start, base + end, base + item.content.start,
+                            base + contentEnd, base + textEnd};
     }
     return {};
+}
+
+QVariantMap Backend::qmlEmphasisSpanAt(int position, const QString &marker) const {
+    const std::optional<EmphasisSpan> span = emphasisSpanAt(position, marker);
+    if (!span)
+        return {};
+    return {{QStringLiteral("start"), span->start},
+            {QStringLiteral("end"), span->end},
+            {QStringLiteral("contentStart"), span->contentStart},
+            {QStringLiteral("contentEnd"), span->contentEnd},
+            {QStringLiteral("textEnd"), span->textEnd}};
 }
 
 QString Backend::linkUrlAt(int position) const {
@@ -827,13 +851,23 @@ bool Backend::insideFence(int position) const {
     return opensOrContinues;
 }
 
-QVariantMap Backend::windowGeometry() const {
+WindowGeometry Backend::windowGeometry() const {
     QSettings settings;
-    return {{QStringLiteral("x"), settings.value(QStringLiteral("window/x"), -1)},
-            {QStringLiteral("y"), settings.value(QStringLiteral("window/y"), -1)},
-            {QStringLiteral("width"), settings.value(QStringLiteral("window/width"), 1280)},
-            {QStringLiteral("height"), settings.value(QStringLiteral("window/height"), 820)},
-            {QStringLiteral("maximized"), settings.value(QStringLiteral("window/maximized"), false)}};
+    const WindowGeometry defaults;
+    return {settings.value(QStringLiteral("window/x"), defaults.x).toInt(),
+            settings.value(QStringLiteral("window/y"), defaults.y).toInt(),
+            settings.value(QStringLiteral("window/width"), defaults.width).toInt(),
+            settings.value(QStringLiteral("window/height"), defaults.height).toInt(),
+            settings.value(QStringLiteral("window/maximized"), defaults.maximized).toBool()};
+}
+
+QVariantMap Backend::qmlWindowGeometry() const {
+    const WindowGeometry geometry = windowGeometry();
+    return {{QStringLiteral("x"), geometry.x},
+            {QStringLiteral("y"), geometry.y},
+            {QStringLiteral("width"), geometry.width},
+            {QStringLiteral("height"), geometry.height},
+            {QStringLiteral("maximized"), geometry.maximized}};
 }
 
 void Backend::saveWindowGeometry(int x, int y, int width, int height, bool maximized) {

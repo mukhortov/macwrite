@@ -251,7 +251,7 @@ QVariantMap WindowManager::cascadedGeometry() const {
     const QQuickWindow *front = activeWindow();
     // A full-screen or zoomed window has no place of its own to step from.
     if (front->windowStates() & (Qt::WindowFullScreen | Qt::WindowMaximized))
-        return backendFor(front)->windowGeometry();
+        return backendFor(front)->qmlWindowGeometry();
 
     const QScreen *screen = front->screen();
     const QRect available = screen ? screen->availableGeometry() : QRect();

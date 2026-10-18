@@ -54,7 +54,7 @@ ApplicationWindow {
         && !fontPicker.visible
     // Where the window opens. The window manager steps a new window out from
     // the front one; the first opens where the last one closed.
-    property var initialGeometry: backend.windowGeometry()
+    property var initialGeometry: backend.qmlWindowGeometry()
 
     // A close the writer was asked about is off, and with it any quit that
     // was waiting on this window.
@@ -931,7 +931,7 @@ ApplicationWindow {
                 function wrapSelection(marker) {
                     forceActiveFocus();
                     EditorMutations.toggleWrap(editor, marker,
-                                               backend.emphasisSpanAt(cursorPosition, marker));
+                                               backend.qmlEmphasisSpanAt(cursorPosition, marker));
                 }
 
                 function insertLink() {
@@ -1053,7 +1053,7 @@ ApplicationWindow {
 
                 function skipHiddenForward(position) {
                     var pos = position;
-                    var ranges = backend.hiddenRangesAt(pos);
+                    var ranges = backend.qmlHiddenRangesAt(pos);
                     for (var i = 0; i < ranges.length; i++) {
                         if (pos >= ranges[i].start && pos < ranges[i].end) {
                             pos = ranges[i].end;
@@ -1065,7 +1065,7 @@ ApplicationWindow {
 
                 function skipHiddenBackward(position) {
                     var pos = position;
-                    var ranges = backend.hiddenRangesAt(pos);
+                    var ranges = backend.qmlHiddenRangesAt(pos);
                     for (var i = ranges.length - 1; i >= 0; i--) {
                         if (pos > ranges[i].start && pos <= ranges[i].end) {
                             pos = ranges[i].start;
@@ -1264,7 +1264,7 @@ ApplicationWindow {
                 }
 
                 Component.onCompleted: {
-                    backend.attachDocument(textDocument);
+                    backend.attachQuickDocument(textDocument);
                     forceActiveFocus();
                 }
             }

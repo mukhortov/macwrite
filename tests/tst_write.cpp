@@ -697,6 +697,38 @@ private slots:
         QCOMPARE(found, last);
     }
 
+    // The widget editor asks Backend in C++ types, not QML's maps and lists.
+    void answersEditorsInPlainTypes() {
+        Backend backend;
+        QTextDocument document;
+        backend.attachDocument(&document);
+        QTextCursor(&document).insertText(QStringLiteral("a **b** c"));
+
+        const QList<TextRange> ranges = backend.hiddenRangesAt(3);
+        QCOMPARE(ranges.size(), 2);
+        QCOMPARE(ranges.at(0).start, 2);
+        QCOMPARE(ranges.at(0).end, 4);
+        QCOMPARE(ranges.at(1).start, 5);
+        QCOMPARE(ranges.at(1).end, 7);
+
+        const std::optional<EmphasisSpan> bold = backend.emphasisSpanAt(4, QStringLiteral("**"));
+        QVERIFY(bold);
+        QCOMPARE(bold->start, 2);
+        QCOMPARE(bold->end, 7);
+        QCOMPARE(bold->contentStart, 4);
+        QCOMPARE(bold->contentEnd, 5);
+        QCOMPARE(bold->textEnd, 5);
+        QVERIFY(!backend.emphasisSpanAt(0, QStringLiteral("*")));
+
+        QSettings().remove(QStringLiteral("window"));
+        const WindowGeometry geometry = backend.windowGeometry();
+        QCOMPARE(geometry.x, -1);
+        QCOMPARE(geometry.y, -1);
+        QCOMPARE(geometry.width, 1280);
+        QCOMPARE(geometry.height, 820);
+        QCOMPARE(geometry.maximized, false);
+    }
+
     void findsLinesWithoutCopyingTheText() {
         Backend backend;
         QScopedPointer<QObject> editor(makeEditor(backend));
@@ -1859,7 +1891,7 @@ private slots:
         QVERIFY2(editor, qPrintable(component.errorString()));
         auto *quickDocument = editor->property("textDocument").value<QQuickTextDocument *>();
         QVERIFY(quickDocument);
-        backend.attachDocument(quickDocument);
+        backend.attachQuickDocument(quickDocument);
         auto *document = quickDocument->textDocument();
         auto *highlighter = document->findChild<MarkdownHighlighter *>();
         QVERIFY(highlighter);
@@ -3956,7 +3988,7 @@ private:
         }
         QObject *editor = component.create();
         if (editor)
-            backend.attachDocument(editor->property("doc").value<QObject *>());
+            backend.attachQuickDocument(editor->property("doc").value<QObject *>());
         return editor;
     }
 
@@ -4003,7 +4035,7 @@ private:
         if (!quickDocument)
             return nullptr;
 
-        backend->attachDocument(quickDocument);
+        backend->attachQuickDocument(quickDocument);
         return quickDocument;
     }
 
