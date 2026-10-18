@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QString>
+#include <QTimer>
 #include <QWidget>
 
 class Backend;
@@ -66,6 +67,9 @@ public:
     void dismiss();
     bool isOpen() const { return isVisible(); }
     void step(int direction);
+    // Typing in the search field waits for a pause before searching, so
+    // anything that acts on the matches catches up with the field first.
+    void flushSearch();
     QLineEdit *searchField() const { return m_searchField; }
     QLineEdit *replaceField() const { return m_replaceField; }
     const SearchMatches &matches() const { return m_matches; }
@@ -88,4 +92,7 @@ private:
     QLineEdit *m_replaceField;
     QLabel *m_count;
     QWidget *m_replaceRow;
+    // Searching a long document for each letter typed makes typing a word
+    // stall, so the search waits until the typing pauses.
+    QTimer m_searchDelay;
 };

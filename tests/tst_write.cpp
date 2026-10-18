@@ -1987,6 +1987,7 @@ private slots:
         fixture.load(QStringLiteral("foo bar foo"));
         findBar->open(false);
         findBar->searchField()->setText(QStringLiteral("foo"));
+        findBar->flushSearch();
         QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("foo"));
 
         // Back in the text, typing goes where the caret is.
@@ -2002,7 +2003,9 @@ private slots:
         // follows it when text above it is deleted.
         fixture.load(QStringLiteral("long text\nfoo\nfoo"));
         findBar->searchField()->setText(QStringLiteral("x"));
+        findBar->flushSearch();
         findBar->searchField()->setText(QStringLiteral("foo"));
+        findBar->flushSearch();
         findBar->step(1);
         QCOMPARE(fixture.drawnAs(14), QStringLiteral("current"));
         QCOMPARE(fixture.drawnAs(10), QStringLiteral("other"));
@@ -2029,6 +2032,7 @@ private slots:
         // character whose lowercase is longer.
         fixture.load(QString::fromUtf8("\xC4\xB0 ab"));
         findBar->searchField()->setText(QStringLiteral("ab"));
+        findBar->flushSearch();
         QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("ab"));
     }
 
@@ -2085,7 +2089,7 @@ private slots:
         fixture.load(QStringLiteral("foo foo foo"));
         findBar->open(true);
         QTest::keyClicks(findBar->searchField(), QStringLiteral("foo"));
-        QCOMPARE(count->text(), QStringLiteral("1 of 3"));
+        QTRY_COMPARE(count->text(), QStringLiteral("1 of 3"));
         QTest::keyClick(findBar->searchField(), Qt::Key_Return);
         QCOMPARE(count->text(), QStringLiteral("2 of 3"));
         QCOMPARE(fixture.editor->textCursor().selectionStart(), 4);
@@ -2097,6 +2101,96 @@ private slots:
         QTest::keyClick(findBar->replaceField(), Qt::Key_Return);
         QCOMPARE(fixture.text(), QStringLiteral("bar foo foo"));
         QCOMPARE(count->text(), QStringLiteral("1 of 2"));
+    }
+
+    void searchWaitsForTypingToPause() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        FindBar *findBar = fixture.findBar;
+        MarkdownEditor *editor = fixture.editor;
+        auto *replaceAllButton = findBar->findChild<QPushButton *>(QStringLiteral("replaceAllButton"));
+        QVERIFY(replaceAllButton);
+
+        // Typing does not search until it pauses.
+        fixture.load(QStringLiteral("foo bar foo"));
+        findBar->open(true);
+        findBar->searchField()->setText(QStringLiteral("f"));
+        findBar->searchField()->setText(QStringLiteral("fo"));
+        QCOMPARE(findBar->matches().count(), 0);
+        QTRY_COMPARE(findBar->matches().count(), 2);
+        QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("fo"));
+
+        // Return before the pause lands on the new query's first match.
+        findBar->searchField()->setText(QStringLiteral("bar"));
+        QTest::keyClick(findBar->searchField(), Qt::Key_Return);
+        QCOMPARE(findBar->matches().currentIndex(), 0);
+        QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("bar"));
+
+        // Replace All before the pause replaces the new query's matches.
+        findBar->searchField()->setText(QStringLiteral("foo"));
+        findBar->replaceField()->setText(QStringLiteral("x"));
+        replaceAllButton->click();
+        QCOMPARE(fixture.text(), QStringLiteral("x bar x"));
+
+        // Closing the bar drops a search still waiting for the pause.
+        findBar->searchField()->setText(QStringLiteral("bar"));
+        findBar->dismiss();
+        QTest::qWait(300);
+        QCOMPARE(editor->textCursor().selectedText(), QString());
+    }
+
+    void reopeningTheFindBarSearchesForWhatItHolds() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        FindBar *findBar = fixture.findBar;
+        auto *replaceAllButton = findBar->findChild<QPushButton *>(QStringLiteral("replaceAllButton"));
+        QVERIFY(replaceAllButton);
+
+        fixture.load(QStringLiteral("foo bar foo"));
+        findBar->open(true);
+        findBar->searchField()->setText(QStringLiteral("foo"));
+        QTRY_COMPARE(findBar->matches().count(), 2);
+
+        // A query changed just before closing the bar is searched on reopening,
+        // so Replace All does not cut at the old query's matches.
+        findBar->searchField()->setText(QStringLiteral("o"));
+        findBar->dismiss();
+        findBar->open(true);
+        findBar->replaceField()->setText(QStringLiteral("x"));
+        replaceAllButton->click();
+        QCOMPARE(fixture.text(), QStringLiteral("fxx bar fxx"));
+
+        // Edits made while the bar was closed are searched on reopening too.
+        findBar->dismiss();
+        fixture.load(QStringLiteral("a bar"));
+        findBar->open(false);
+        findBar->searchField()->setText(QStringLiteral("bar"));
+        QTRY_COMPARE(findBar->matches().count(), 1);
+        findBar->dismiss();
+        fixture.load(QStringLiteral("bar bar bar"));
+        findBar->open(false);
+        QCOMPARE(findBar->matches().count(), 3);
+    }
+
+    // Hiding the field that has the focus leaves the input method with
+    // nothing focused for a moment, so the text takes the focus first.
+    void handsTheFocusBackBeforeHidingTheFindBar() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        FindBar *findBar = fixture.findBar;
+        findBar->open(false);
+        QTRY_VERIFY(findBar->searchField()->hasFocus());
+
+        bool barShownWhenTextFocused = false;
+        const QMetaObject::Connection watching = connect(
+            qApp, &QApplication::focusChanged, findBar, [&](QWidget *, QWidget *now) {
+                if (now == fixture.editor)
+                    barShownWhenTextFocused = findBar->isVisible();
+            });
+        findBar->dismiss();
+        disconnect(watching);
+        QVERIFY(fixture.editor->hasFocus());
+        QVERIFY(barShownWhenTextFocused);
     }
 
     void reachesAndLeavesTheReplaceFieldFromTheKeyboard() {

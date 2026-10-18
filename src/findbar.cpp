@@ -1,6 +1,8 @@
 #include "findbar.h"
 
+#include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QInputMethod>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -110,7 +112,10 @@ FindBar::FindBar(MarkdownEditor *editor, Backend *backend, QWidget *parent)
 
     m_searchField->installEventFilter(this);
     m_replaceField->installEventFilter(this);
-    connect(m_searchField, &QLineEdit::textChanged, this, [this]() { search(true); });
+    m_searchDelay.setSingleShot(true);
+    m_searchDelay.setInterval(150);
+    connect(&m_searchDelay, &QTimer::timeout, this, [this]() { search(true); });
+    connect(m_searchField, &QLineEdit::textChanged, &m_searchDelay, qOverload<>(&QTimer::start));
     connect(previous, &QToolButton::clicked, this, [this]() { step(-1); });
     connect(next, &QToolButton::clicked, this, [this]() { step(1); });
     connect(done, &QPushButton::clicked, this, &FindBar::dismiss);
@@ -123,34 +128,53 @@ FindBar::FindBar(MarkdownEditor *editor, Backend *backend, QWidget *parent)
     hide();
 }
 
+// The matches stop following the field and the text while the bar is
+// closed, and a search still waiting for a pause is dropped on closing, so
+// opening the bar searches again for what the field holds.
 void FindBar::open(bool withReplace) {
     show();
     if (withReplace)
         m_replaceRow->show();
-    // The text may have changed while the bar was away.
-    search(false);
+    // A search still waiting in an open bar lands on its first match.
+    search(m_searchDelay.isActive());
     m_searchField->setFocus();
     m_searchField->selectAll();
 }
 
+// The text takes the focus before the bar hides: hiding the field that has
+// it leaves the input method with nothing focused for a moment.
 void FindBar::dismiss() {
+    m_searchDelay.stop();
+    QGuiApplication::inputMethod()->reset();
+    m_editor->setFocus();
     hide();
     m_replaceRow->hide();
     m_editor->setSearchHighlights({});
     QTextCursor cursor = m_editor->textCursor();
     cursor.clearSelection();
     m_editor->setTextCursor(cursor);
-    m_editor->setFocus();
 }
 
 void FindBar::step(int direction) {
+    // A pending search lands on its first match, which is where the writer
+    // meant to go, rather than one past it.
+    if (m_searchDelay.isActive()) {
+        search(true);
+        return;
+    }
     if (m_matches.count() == 0)
         return;
     m_matches.step(direction);
     showCurrent(true);
 }
 
+void FindBar::flushSearch() {
+    if (m_searchDelay.isActive())
+        search(true);
+}
+
 void FindBar::search(bool selectMatch) {
+    m_searchDelay.stop();
     const QString query = m_searchField->text();
     m_matches.update(query.isEmpty() ? QList<int>() : m_backend->searchMatches(query),
                      int(query.size()), selectMatch);
@@ -188,6 +212,7 @@ void FindBar::documentChanged() {
 // Carries on past what was just written, so a replacement the query also
 // matches is not found again.
 void FindBar::replaceCurrent() {
+    flushSearch();
     const int start = m_matches.currentStart();
     if (start < 0)
         return;
@@ -203,6 +228,7 @@ void FindBar::replaceCurrent() {
 // One replacement over the span of every match, so a single undo takes them
 // all back.
 void FindBar::replaceAll() {
+    flushSearch();
     if (m_matches.count() == 0)
         return;
     const QString text = m_editor->toPlainText();

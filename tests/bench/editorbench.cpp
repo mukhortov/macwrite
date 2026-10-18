@@ -116,6 +116,10 @@ int main(int argc, char **argv) {
     report("search key", timeSteps(int(query.size()), &window, [&window, &query](int index) {
         QTest::keyClick(window.findBar()->searchField(), query.at(index).toLatin1());
     }));
+    // The search itself waits for the typing to pause.
+    report("search at the pause", timeSteps(1, &window, [&window](int) {
+        window.findBar()->flushSearch();
+    }));
     std::printf("matches: %d\n", window.findBar()->matches().count());
     window.findBar()->dismiss();
 
