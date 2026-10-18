@@ -7,7 +7,7 @@ TARGET = Write
 TEMPLATE = app
 
 # The one place the version lives: the app reports it and the bundle carries it.
-VERSION = 0.7.0
+VERSION = 0.7.2
 DEFINES += WRITE_VERSION=\\\"$$VERSION\\\"
 
 QMAKE_INFO_PLIST = macos/Info.plist
