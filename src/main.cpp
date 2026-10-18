@@ -7,7 +7,6 @@
 #include "appeventfilter.h"
 #include "backend.h"
 #include "cli.h"
-#include "macfonts.h"
 #include "systemtheme.h"
 #include "windowmanager.h"
 
@@ -26,10 +25,7 @@ int main(int argc, char *argv[]) {
     app.setApplicationName(QStringLiteral("write"));
     app.setApplicationVersion(QStringLiteral(WRITE_VERSION));
 
-    // Write's own font, from the bundle.
-    const QDir fonts(QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/Fonts"));
-    for (const QString &file : fonts.entryList({QStringLiteral("*.ttf")}, QDir::Files))
-        MacFonts::addApplicationFont(fonts.filePath(file));
+    Backend::addFonts(QDir(QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/Fonts")));
 
     // Settings land in the bundle's own preferences, com.mukhortov.write, and
     // drafts under Application Support/mukhortov/write, clear of any other

@@ -34,7 +34,8 @@ void MarkdownHighlighter::setTheme(bool darkMode, const QString &background,
 
 // The hidden marker spacing is measured from the document's default font, so
 // it has to be remeasured whenever the editor switches typeface.
-void MarkdownHighlighter::refreshFont() {
+void MarkdownHighlighter::refreshFont(const QString &codeFamily) {
+    m_codeFamily = codeFamily;
     rebuildFormats();
     rehighlight();
 }
@@ -87,6 +88,11 @@ void MarkdownHighlighter::rebuildFormats() {
 
     m_fencedCodeFormat = QTextCharFormat();
     m_fencedCodeFormat.setForeground(text);
+
+    if (!m_codeFamily.isEmpty()) {
+        m_codeFormat.setFontFamilies(QStringList{m_codeFamily});
+        m_fencedCodeFormat.setFontFamilies(QStringList{m_codeFamily});
+    }
 
     // A fence recedes the way a heading's `#` does, over the panel it opens.
     m_fenceFormat = m_fencedCodeFormat;

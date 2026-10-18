@@ -18,7 +18,6 @@
 #include <QPushButton>
 #include <QMessageBox>
 #include <QFileDialog>
-#include <QFontDialog>
 #include <QShortcut>
 #include <QStatusBar>
 #include <QVBoxLayout>
@@ -31,8 +30,6 @@
 #include "findbar.h"
 
 #include "appeventfilter.h"
-#include "macfonts.h"
-#include "macfontspanel.h"
 #include "backend.h"
 #include "macwindow.h"
 #include "mainwindow.h"
@@ -327,20 +324,10 @@ struct WindowFixture {
     }
 };
 
-// Write's own font, added as the app adds it from its bundle, once a run:
-// CoreText takes each file only once.
-static bool addWritesOwnFont() {
-    static const bool added = [] {
-        const QDir fonts(QFINDTESTDATA("../fonts"));
-        const QStringList files = fonts.entryList({QStringLiteral("*.ttf")}, QDir::Files);
-        if (files.size() != 4)
-            return false;
-        for (const QString &file : files) {
-            if (!MacFonts::addApplicationFont(fonts.filePath(file)))
-                return false;
-        }
-        return true;
-    }();
+// The fonts Write offers, added as the app adds them, once a run: its own
+// from the repository, as the bundle carries them, and macOS's SF Mono.
+static bool addWritesFonts() {
+    static const bool added = Backend::addFonts(QDir(QFINDTESTDATA("../fonts")));
     return added;
 }
 
@@ -1972,7 +1959,7 @@ private slots:
                            "Select All ⌘A | Copy as HTML ⇧⌘C | - | Find ⌘F | "
                            "Find and Replace ⌥⌘F | - | Bold ⌘B | Italic ⌘I | "
                            "Strikethrough ⇧⌘X | Link ⌘K"),
-            QStringLiteral("View: Bigger ⌘= | Smaller ⌘- | Actual Size ⌘0 | Font… | - | "
+            QStringLiteral("View: Bigger ⌘= | Smaller ⌘- | Actual Size ⌘0 | Font | - | "
                            "Enter Full Screen ⌃⌘F"),
             QStringLiteral("Window: Minimize ⌘M | Zoom"),
         }));
@@ -2369,89 +2356,92 @@ private slots:
         for (QMessageBox *box : fixture.window.findChildren<QMessageBox *>())
             shown += box->isVisible();
         QCOMPARE(shown, 1);
+        // So are the fonts.
+        QVERIFY(!fixture.command(QStringLiteral("Monaco"))->isEnabled());
         // Minimizing is the window's own business, sheet or no sheet.
         QVERIFY(fixture.command(QStringLiteral("Minimize"))->isEnabled());
         sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Cancel)->click();
         QTRY_VERIFY(fixture.window.commandsEnabled());
-
-        // So it is with the Fonts panel up.
-        QVERIFY(fixture.choose(QStringLiteral("Font…")));
-        auto *panel = fixture.window.findChild<QFontDialog *>(QStringLiteral("fontsPanel"));
-        QVERIFY(panel);
-        QTRY_VERIFY(panel->isVisible());
-        QVERIFY(!fixture.window.commandsEnabled());
-        panel->reject();
-        QTRY_VERIFY(fixture.window.commandsEnabled());
+        QVERIFY(fixture.command(QStringLiteral("Monaco"))->isEnabled());
         fixture.backend.discardRecovery();
     }
 
-    void choosesTheEditorFontFromTheFontsPanel() {
-        WindowFixture fixture;
-        QVERIFY(fixture.show());
-        // The bundled font is the app's to register, so the test starts from
-        // one the system has.
-        const QString before = fixture.backend.editorFont();
-        fixture.backend.setEditorFont(QStringLiteral("Menlo"));
-        QVERIFY(fixture.choose(QStringLiteral("Font…")));
-        auto *panel = fixture.window.findChild<QFontDialog *>(QStringLiteral("fontsPanel"));
-        QVERIFY(panel);
-        QTRY_VERIFY(panel->isVisible());
-        QCOMPARE(panel->currentFont().family(), QStringLiteral("Menlo"));
-        // The panel is live, as macOS's is: the text takes the family as the
-        // writer picks it, and closing the panel keeps it.
-        panel->setCurrentFont(QFont(QStringLiteral("Monaco")));
-        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
-        QCOMPARE(fixture.editor()->font().family(), QStringLiteral("Monaco"));
-        panel->reject();
-        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
-        QTRY_VERIFY(fixture.editor()->hasFocus());
-        fixture.backend.setEditorFont(before);
-    }
-
-    // The same with AppKit's own Fonts panel, which has no OK button: only
-    // its close button puts it away.
-    void choosesTheEditorFontFromTheMacFontsPanel() {
-        if (QGuiApplication::platformName() != QLatin1String("cocoa"))
-            QSKIP("The Fonts panel is AppKit's; run on the Cocoa platform.");
+    // View › Font offers eight fonts, with a tick by the one the text is in.
+    void choosesTheEditorFontFromTheFontMenu() {
         WindowFixture fixture;
         QVERIFY(fixture.show());
         const QString before = fixture.backend.editorFont();
         fixture.backend.setEditorFont(QStringLiteral("Menlo"));
-        QVERIFY(fixture.choose(QStringLiteral("Font…")));
-        QTRY_VERIFY(MacFontsPanel::isVisible());
-        MacFontsPanel::choose(QStringLiteral("Monaco"));
-        QTRY_COMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
-        MacFontsPanel::close();
-        QTRY_VERIFY(!MacFontsPanel::isVisible());
-        QTRY_VERIFY(fixture.window.commandsEnabled());
-        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
-        QTRY_VERIFY(fixture.editor()->hasFocus());
+        QAction *font = fixture.command(QStringLiteral("Font"));
+        QVERIFY(font && font->menu());
+        const auto names = [font](bool tickedOnly) {
+            QStringList list;
+            for (QAction *item : font->menu()->actions()) {
+                if (!tickedOnly || item->isChecked())
+                    list << item->text();
+            }
+            return list;
+        };
+        QCOMPARE(names(false), (QStringList{QStringLiteral("Avenir"), QStringLiteral("Georgia"),
+                                           QStringLiteral("IBM Plex Mono"), QStringLiteral("Menlo"),
+                                           QStringLiteral("Monaco"), QStringLiteral("PT Mono"),
+                                           QStringLiteral("SF Mono"), QStringLiteral("SF Pro")}));
+        QCOMPARE(names(true), QStringList{QStringLiteral("Menlo")});
+
+        QVERIFY(fixture.choose(QStringLiteral("Georgia")));
+        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Georgia"));
+        QCOMPARE(fixture.editor()->font().family(), QStringLiteral("Georgia"));
+        QCOMPARE(names(true), QStringList{QStringLiteral("Georgia")});
+
+        // A change from elsewhere, such as another window, moves the tick.
+        fixture.backend.setEditorFont(QStringLiteral("Monaco"));
+        QCOMPARE(names(true), QStringList{QStringLiteral("Monaco")});
         fixture.backend.setEditorFont(before);
     }
 
-    // Write's own font is AppKit's as well as Qt's, so the Fonts panel offers
-    // it alongside the system's.
-    void addsWritesOwnFontForQtAndAppKit() {
-        QVERIFY(addWritesOwnFont());
-        QVERIFY(QFontDatabase::hasFamily(Backend::defaultEditorFont()));
-        QVERIFY(MacFontsPanel::lists(Backend::defaultEditorFont()));
+    // Every font Write offers comes with macOS or with Write itself, so the
+    // writer finds the same eight on any Mac. SF Pro and SF Mono are the faces
+    // macOS sets its own interface in, not Apple's separate download of them.
+    void offersOnlyFontsEveryMacHas() {
+        QVERIFY(addWritesFonts());
+        for (const QString &name : Backend::editorFonts()) {
+            const QString family = Backend::fontFamily(name);
+            QVERIFY2(QFontDatabase::hasFamily(family), qPrintable(name));
+            QFont font(family);
+            font.setPixelSize(20);
+            QCOMPARE(QFontInfo(font).family(), family);
+        }
+        QCOMPARE(Backend::fontFamily(QStringLiteral("SF Pro")), QStringLiteral(".AppleSystemUIFont"));
+        QCOMPARE(Backend::fontFamily(QStringLiteral("SF Mono")), QStringLiteral(".SF NS Mono"));
+        QCOMPARE(Backend::fontFamily(QStringLiteral("Georgia")), QStringLiteral("Georgia"));
+        QVERIFY(QFontDatabase::isFixedPitch(Backend::fontFamily(QStringLiteral("SF Mono"))));
     }
 
-    // AppKit's panel reports its own choice as it closes: with Write's font
-    // unknown to it, that was the system's, which took over the text.
-    void keepsWritesOwnFontThroughTheMacFontsPanel() {
-        if (QGuiApplication::platformName() != QLatin1String("cocoa"))
-            QSKIP("The Fonts panel is AppKit's; run on the Cocoa platform.");
-        QVERIFY(addWritesOwnFont());
-        WindowFixture fixture;
-        QVERIFY(fixture.show());
+    // Code stays monospaced when the text is not: inline and fenced code take
+    // Write's own font beside a proportional one, and the text's own beside a
+    // monospaced one.
+    void setsCodeInAMonospacedFont() {
+        QVERIFY(addWritesFonts());
+        EditorFixture fixture;
         const QString before = fixture.backend.editorFont();
-        fixture.backend.setEditorFont(Backend::defaultEditorFont());
-        QVERIFY(fixture.choose(QStringLiteral("Font…")));
-        QTRY_VERIFY(MacFontsPanel::isVisible());
-        MacFontsPanel::close();
-        QTRY_VERIFY(fixture.window.commandsEnabled());
-        QCOMPARE(fixture.backend.editorFont(), Backend::defaultEditorFont());
+        const auto codeFamilies = [&fixture](int number) {
+            QStringList families;
+            for (const QTextLayout::FormatRange &range :
+                 fixture.editor->document()->findBlockByNumber(number).layout()->formats()) {
+                if (range.format.hasProperty(QTextFormat::FontFamilies))
+                    families << range.format.fontFamilies().toStringList();
+            }
+            families.removeDuplicates();
+            return families;
+        };
+        fixture.backend.setEditorFont(QStringLiteral("Georgia"));
+        fixture.load(QStringLiteral("prose `inline` prose\n```\nfenced\n```"), 0);
+        QCOMPARE(codeFamilies(0), QStringList{QStringLiteral("IBM Plex Mono")});
+        QCOMPARE(codeFamilies(2), QStringList{QStringLiteral("IBM Plex Mono")});
+
+        fixture.backend.setEditorFont(QStringLiteral("SF Mono"));
+        QCOMPARE(codeFamilies(0), QStringList());
+        QCOMPARE(codeFamilies(2), QStringList());
         fixture.backend.setEditorFont(before);
     }
 
@@ -3312,6 +3302,16 @@ private slots:
         // A remembered font that has since been uninstalled falls back.
         QSettings().setValue(QStringLiteral("editor/font"), QStringLiteral("No Such Font"));
         QCOMPARE(Backend().editorFont(), Backend::defaultEditorFont());
+
+        // So does one Write no longer offers, installed or not, and Write
+        // takes none it does not offer.
+        QSettings().setValue(QStringLiteral("editor/font"), QStringLiteral("Helvetica"));
+        QCOMPARE(Backend().editorFont(), Backend::defaultEditorFont());
+        {
+            Backend backend;
+            backend.setEditorFont(QStringLiteral("Helvetica"));
+            QCOMPARE(backend.editorFont(), Backend::defaultEditorFont());
+        }
         QSettings().remove(QStringLiteral("editor/font"));
     }
 

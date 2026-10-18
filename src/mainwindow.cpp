@@ -1,11 +1,11 @@
 #include "mainwindow.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFontDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -178,7 +178,19 @@ void MainWindow::buildMenus() {
                [this]() { m_backend->decreaseTextSize(); });
     addCommand(view, QStringLiteral("Actual Size"), QKeySequence(QStringLiteral("Ctrl+0")),
                [this]() { m_backend->resetTextSize(); });
-    addCommand(view, QStringLiteral("Font…"), QKeySequence(), [this]() { showFontsPanel(); });
+    // The font is a family only: the size is Bigger and Smaller's, and bold
+    // and italic are the Markdown's.
+    QMenu *fonts = view->addMenu(QStringLiteral("Font"));
+    fonts->menuAction()->setMenuRole(QAction::NoRole);
+    m_fontChoice = new QActionGroup(fonts);
+    for (const QString &name : Backend::editorFonts()) {
+        QAction *item = addCommand(fonts, name, QKeySequence(),
+                                   [this, name]() { m_backend->setEditorFont(name); });
+        item->setCheckable(true);
+        m_fontChoice->addAction(item);
+    }
+    tickFont();
+    connect(m_backend, &Backend::editorFontChanged, this, &MainWindow::tickFont);
     view->addSeparator();
     // Cmd+Ctrl+F, as Qt spells Cmd as Ctrl and the Control key as Meta.
     m_fullScreen = addCommand(view, QStringLiteral("Enter Full Screen"),
@@ -506,23 +518,7 @@ void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
     sheet->open();
 }
 
-// The Fonts panel sets only the family; the size is the text size's. It is
-// live, as macOS's is: AppKit's panel has no OK button, and its close button
-// reads as Cancel, so the family applies as the writer picks it.
-void MainWindow::showFontsPanel() {
-    if (m_fontsPanel && m_waitingOn.contains(m_fontsPanel))
-        return;
-    auto *panel = new QFontDialog(QFont(m_backend->editorFont()), this);
-    panel->setObjectName(QStringLiteral("fontsPanel"));
-    panel->setAttribute(Qt::WA_DeleteOnClose);
-    panel->setOption(QFontDialog::NoButtons);
-    connect(panel, &QFontDialog::currentFontChanged, m_backend,
-            [this](const QFont &font) { m_backend->setEditorFont(font.family()); });
-    // AppKit leaves no window key once its panel closes; the writer goes on
-    // typing in this one.
-    connect(panel, &QDialog::finished, this, &QWidget::activateWindow);
-    connect(panel, &QDialog::finished, m_editor, qOverload<>(&QWidget::setFocus));
-    m_fontsPanel = panel;
-    waitOn(panel);
-    panel->open();
+void MainWindow::tickFont() {
+    for (QAction *item : m_fontChoice->actions())
+        item->setChecked(item->text() == m_backend->editorFont());
 }

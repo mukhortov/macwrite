@@ -15,6 +15,7 @@ class Backend;
 class FindBar;
 class MarkdownEditor;
 class QAction;
+class QActionGroup;
 class QDialog;
 class QLabel;
 class QMenu;
@@ -74,7 +75,8 @@ private:
     void showOpenPanel();
     void showSavePanel(const QUrl &suggestedUrl);
     void askAboutExternalChange(bool deleted, bool locallyModified);
-    void showFontsPanel();
+    // Ticks the font the text is in, in View › Font.
+    void tickFont();
 
     // What the unsaved-changes sheet was asked for.
     enum class Pending { None, Close, Open };
@@ -86,11 +88,11 @@ private:
     QLabel *m_status;
     QLabel *m_wordCount;
     QAction *m_fullScreen = nullptr;
+    QActionGroup *m_fontChoice = nullptr;
     QList<QAction *> m_heldCommands;
     QSet<QObject *> m_waitingOn;
     QPointer<QMessageBox> m_unsavedSheet;
     QPointer<QMessageBox> m_changeSheet;
-    QPointer<QDialog> m_fontsPanel;
     Pending m_pending = Pending::None;
     QUrl m_pendingUrl;
     // Only a save chosen in the sheet carries out the pending close or open,

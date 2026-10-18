@@ -128,7 +128,7 @@ Backend::Backend(QObject *parent) : QObject(parent) {
     setKnownFileContents(QByteArray(), false);
 
     const QString savedFont = QSettings().value(editorFontSetting).toString();
-    m_editorFont = !savedFont.isEmpty() && QFontDatabase::hasFamily(savedFont)
+    m_editorFont = editorFonts().contains(savedFont) && QFontDatabase::hasFamily(fontFamily(savedFont))
         ? savedFont
         : defaultEditorFont();
 
@@ -803,22 +803,58 @@ QString Backend::defaultEditorFont() {
     return QStringLiteral("IBM Plex Mono");
 }
 
-void Backend::setEditorFont(const QString &family) {
-    if (family.isEmpty() || family == m_editorFont)
+// The fonts Write offers, by the names View › Font shows. Each comes with
+// macOS or with Write, so every Mac has all of them.
+QStringList Backend::editorFonts() {
+    return {QStringLiteral("Avenir"),  QStringLiteral("Georgia"), QStringLiteral("IBM Plex Mono"),
+            QStringLiteral("Menlo"),   QStringLiteral("Monaco"),  QStringLiteral("PT Mono"),
+            QStringLiteral("SF Mono"), QStringLiteral("SF Pro")};
+}
+
+// "SF Pro" and "SF Mono" name Apple's separate download of them. macOS's own
+// copies, which set its interface, go by hidden names.
+QString Backend::fontFamily(const QString &name) {
+    if (name == QLatin1String("SF Pro"))
+        return QStringLiteral(".AppleSystemUIFont");
+    if (name == QLatin1String("SF Mono"))
+        return QStringLiteral(".SF NS Mono");
+    return name;
+}
+
+// Write's own font, from the bundle, and macOS's SF Mono, which Qt does not
+// list among the system's fonts.
+bool Backend::addFonts(const QDir &bundled) {
+    QStringList files;
+    for (const QString &file : bundled.entryList({QStringLiteral("*.ttf")}, QDir::Files))
+        files << bundled.filePath(file);
+    if (files.isEmpty())
+        return false;
+    files << QStringLiteral("/System/Library/Fonts/SFNSMono.ttf")
+          << QStringLiteral("/System/Library/Fonts/SFNSMonoItalic.ttf");
+    bool added = true;
+    for (const QString &file : std::as_const(files))
+        added = QFontDatabase::addApplicationFont(file) != -1 && added;
+    return added;
+}
+
+void Backend::setEditorFont(const QString &name) {
+    if (!editorFonts().contains(name) || name == m_editorFont)
         return;
 
-    m_editorFont = family;
-    QSettings().setValue(editorFontSetting, family);
+    m_editorFont = name;
+    QSettings().setValue(editorFontSetting, name);
     emit editorFontChanged();
 }
 
 bool Backend::editorFontFixedPitch() const {
-    return QFontDatabase::isFixedPitch(m_editorFont);
+    return QFontDatabase::isFixedPitch(fontFamily(m_editorFont));
 }
 
 void Backend::documentFontChanged() {
+    // Code stays monospaced beside a proportional font, in Write's own.
     if (m_highlighter)
-        m_highlighter->refreshFont();
+        m_highlighter->refreshFont(editorFontFixedPitch() ? QString()
+                                                          : fontFamily(defaultEditorFont()));
 }
 
 void Backend::loadDocumentText(const QString &text) {

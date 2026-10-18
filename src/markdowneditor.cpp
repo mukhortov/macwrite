@@ -84,7 +84,7 @@ int MarkdownEditor::fontPixelSize() const {
 }
 
 void MarkdownEditor::applyFont() {
-    QFont writing(m_backend->editorFont());
+    QFont writing(Backend::fontFamily(m_backend->editorFont()));
     writing.setPixelSize(fontPixelSize());
     writing.setWeight(QFont::Normal);
     // Shaping Latin text only kerns and ligates it, which a monospaced font

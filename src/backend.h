@@ -13,6 +13,7 @@
 #include <optional>
 
 class MarkdownHighlighter;
+class QDir;
 class QFont;
 class QTextDocument;
 class QWindow;
@@ -73,9 +74,13 @@ public:
     QString themeCodeBackground() const { return m_themeCodeBackground; }
     QString themeSelectionForeground() const { return m_themeSelectionForeground; }
     QString editorFont() const { return m_editorFont; }
-    void setEditorFont(const QString &family);
+    // One of editorFonts(); the text is set in its fontFamily().
+    void setEditorFont(const QString &name);
     bool editorFontFixedPitch() const;
     static QString defaultEditorFont();
+    static QStringList editorFonts();
+    static QString fontFamily(const QString &name);
+    static bool addFonts(const QDir &bundled);
     static int countWords(const QString &text);
     static QString normalizedLinkUrl(const QString &clipboardText);
     static QString suggestedFileName(const QString &text);

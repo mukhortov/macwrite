@@ -23,7 +23,6 @@ HEADERS += \
     ../src/backend.h \
     ../src/cli.h \
     ../src/findbar.h \
-    ../src/macfonts.h \
     ../src/macwindow.h \
     ../src/mainwindow.h \
     ../src/markdowneditor.h \
@@ -33,6 +32,5 @@ HEADERS += \
     ../src/windowmanager.h
 
 
-HEADERS += macfontspanel.h
-OBJECTIVE_SOURCES += ../src/macfonts.mm ../src/macwindow.mm macfontspanel.mm
-LIBS += -framework AppKit -framework CoreText
+OBJECTIVE_SOURCES += ../src/macwindow.mm
+LIBS += -framework AppKit
