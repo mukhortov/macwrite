@@ -12,6 +12,7 @@ SOURCES += \
     ../src/appeventfilter.cpp \
     ../src/backend.cpp \
     ../src/cli.cpp \
+    ../src/markdownedits.cpp \
     ../src/markdownhighlighter.cpp \
     ../src/plaintextlayout.cpp \
     ../src/windowmanager.cpp
@@ -19,6 +20,7 @@ HEADERS += \
     ../src/appeventfilter.h \
     ../src/backend.h \
     ../src/cli.h \
+    ../src/markdownedits.h \
     ../src/markdownhighlighter.h \
     ../src/plaintextlayout.h \
     ../src/windowmanager.h

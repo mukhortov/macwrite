@@ -27,6 +27,7 @@
 
 #include "appeventfilter.h"
 #include "backend.h"
+#include "markdownedits.h"
 #include "markdownhighlighter.h"
 #include "plaintextlayout.h"
 #include "windowmanager.h"
@@ -211,6 +212,30 @@ static QString layoutDifference(QTextDocument *qt, QTextDocument *ours, bool hit
     }
     return {};
 }
+
+// A document with a caret or a selection, for the editing rules alone.
+struct EditCase {
+    QTextDocument document;
+    QTextCursor cursor{&document};
+
+    void load(const QString &text, int anchor, int position = -1) {
+        document.setPlainText(text);
+        document.clearUndoRedoStacks();
+        cursor = QTextCursor(&document);
+        cursor.setPosition(anchor);
+        if (position >= 0)
+            cursor.setPosition(position, QTextCursor::KeepAnchor);
+    }
+    QString text() const { return document.toPlainText(); }
+    int caret() const { return cursor.position(); }
+    // Return in a document with no code fences.
+    void returnKey(bool softBreak = false) { MarkdownEdits::smartReturn(cursor, softBreak, false); }
+    // Backspace as the editor presses it: the paragraph break first, else a character.
+    void backspaceKey() {
+        if (!MarkdownEdits::deleteParagraphBreakBehind(cursor))
+            cursor.deletePreviousChar();
+    }
+};
 
 class WriteTest : public QObject {
     Q_OBJECT
@@ -727,6 +752,256 @@ private slots:
         QCOMPARE(geometry.width, 1280);
         QCOMPARE(geometry.height, 820);
         QCOMPARE(geometry.maximized, false);
+    }
+
+    void markdownEditsWrapAndUnwrap() {
+        EditCase edit;
+        edit.load(QStringLiteral("a b c"), 2, 3);
+        MarkdownEdits::toggleWrap(edit.cursor, QStringLiteral("**"), std::nullopt);
+        QCOMPARE(edit.text(), QStringLiteral("a **b** c"));
+        QCOMPARE(edit.cursor.selectedText(), QStringLiteral("b"));
+        MarkdownEdits::toggleWrap(edit.cursor, QStringLiteral("**"), std::nullopt);
+        QCOMPARE(edit.text(), QStringLiteral("a b c"));
+        QCOMPARE(edit.cursor.selectedText(), QStringLiteral("b"));
+
+        // The "*" of "**" is not an italic marker, so italic wraps instead.
+        edit.load(QStringLiteral("**bold**"), 2, 6);
+        MarkdownEdits::toggleWrap(edit.cursor, QStringLiteral("*"), std::nullopt);
+        QCOMPARE(edit.text(), QStringLiteral("***bold***"));
+
+        // With nothing selected the span around the caret is what counts: at
+        // its end the caret steps over the closing marker and back, and inside
+        // it the span comes off with the caret on the same letter.
+        const EmphasisSpan bold{2, 7, 4, 5, 5};
+        edit.load(QStringLiteral("a **b** c"), 7);
+        MarkdownEdits::toggleWrap(edit.cursor, QStringLiteral("**"), bold);
+        QCOMPARE(edit.caret(), 5);
+        MarkdownEdits::toggleWrap(edit.cursor, QStringLiteral("**"), bold);
+        QCOMPARE(edit.caret(), 7);
+        edit.load(QStringLiteral("a **b** c"), 4);
+        MarkdownEdits::toggleWrap(edit.cursor, QStringLiteral("**"), bold);
+        QCOMPARE(edit.text(), QStringLiteral("a b c"));
+        QCOMPARE(edit.caret(), 2);
+    }
+
+    void markdownEditsInsertLinks() {
+        EditCase edit;
+        edit.load(QString(), 0);
+        MarkdownEdits::insertLink(edit.cursor, QString());
+        QCOMPARE(edit.text(), QStringLiteral("[link text](https://)"));
+        QCOMPARE(edit.cursor.selectedText(), QStringLiteral("link text"));
+
+        edit.load(QStringLiteral("word"), 0, 4);
+        MarkdownEdits::insertLink(edit.cursor, QString());
+        QCOMPARE(edit.text(), QStringLiteral("[word](https://)"));
+        QCOMPARE(edit.cursor.selectedText(), QStringLiteral("https://"));
+
+        edit.load(QStringLiteral("word"), 0, 4);
+        MarkdownEdits::insertLink(edit.cursor, QStringLiteral("https://a.b/(x)"));
+        QCOMPARE(edit.text(), QStringLiteral("[word](https://a.b/\\(x\\))"));
+        QVERIFY(!edit.cursor.hasSelection());
+
+        QCOMPARE(MarkdownEdits::escapeLinkText(QStringLiteral("a[b]\\")),
+                 QStringLiteral("a\\[b\\]\\\\"));
+    }
+
+    void markdownEditsPaste() {
+        EditCase edit;
+        edit.load(QStringLiteral(" word "), 0, 6);
+        QVERIFY(MarkdownEdits::pasteUrlAsLink(edit.cursor, QStringLiteral("https://x.y")));
+        QCOMPARE(edit.text(), QStringLiteral(" [word](https://x.y) "));
+
+        edit.load(QStringLiteral("word"), 2);
+        QVERIFY(!MarkdownEdits::pasteUrlAsLink(edit.cursor, QStringLiteral("https://x.y")));
+        edit.load(QStringLiteral("word"), 0, 4);
+        QVERIFY(!MarkdownEdits::pasteUrlAsLink(edit.cursor, QString()));
+        edit.load(QStringLiteral("   "), 0, 3);
+        QVERIFY(!MarkdownEdits::pasteUrlAsLink(edit.cursor, QStringLiteral("https://x.y")));
+        QCOMPARE(edit.text(), QStringLiteral("   "));
+
+        edit.load(QString(), 0);
+        MarkdownEdits::pastePlainText(edit.cursor, QStringLiteral("a\r\nb\rc"));
+        QCOMPARE(edit.text(), QStringLiteral("a\nb\nc"));
+    }
+
+    void markdownEditsReturn() {
+        EditCase edit;
+        // Ending a paragraph leaves the blank line that separates it from the next.
+        edit.load(QStringLiteral("one\n\ntwo"), 8);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\ntwo\n\n"));
+
+        // On a blank line Return is worth one line, not two.
+        edit.load(QStringLiteral("one\n\ntwo"), 4);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\ntwo"));
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\n\ntwo"));
+
+        edit.load(QString(), 0);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("\n"));
+
+        edit.load(QStringLiteral("one\n  \ntwo"), 5);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n \n \ntwo"));
+
+        // A selection dragged right to left breaks the line it leaves behind.
+        edit.load(QStringLiteral("one\n\ntwo"), 7, 4);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\no"));
+
+        // Lists, numbers and quotes carry their marker down; an empty item ends them.
+        edit.load(QStringLiteral("- item"), 6);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("- item\n- "));
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("- item\n\n"));
+        edit.load(QStringLiteral("9. item"), 7);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("9. item\n10. "));
+        edit.load(QStringLiteral("1) a"), 4);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("1) a\n2) "));
+        edit.load(QStringLiteral("> quote"), 7);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("> quote\n> "));
+        edit.load(QStringLiteral("  - x"), 5);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("  - x\n  - "));
+
+        // Shift+Return is a single break.
+        edit.load(QStringLiteral("one"), 3);
+        edit.returnKey(true);
+        QCOMPARE(edit.text(), QStringLiteral("one\n"));
+
+        // Inside a code fence every line is its own, blank ones included.
+        edit.load(QStringLiteral("```\ncode\n```"), 8);
+        MarkdownEdits::smartReturn(edit.cursor, false, true);
+        QCOMPARE(edit.text(), QStringLiteral("```\ncode\n\n```"));
+        MarkdownEdits::smartReturn(edit.cursor, false, true);
+        QCOMPARE(edit.text(), QStringLiteral("```\ncode\n\n\n```"));
+    }
+
+    void markdownEditsBackspace() {
+        EditCase edit;
+        // At the head of a paragraph Backspace closes the whole break above it.
+        edit.load(QStringLiteral("one\n\ntwo"), 5);
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("onetwo"));
+        QCOMPARE(edit.caret(), 3);
+
+        // Ending a paragraph writes both breaks, and one Backspace takes both.
+        edit.load(QStringLiteral("one\n\ntwo"), 3);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\n\ntwo"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\ntwo"));
+        QCOMPARE(edit.caret(), 3);
+
+        edit.load(QStringLiteral("one\n\n\n\ntwo"), 4);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\n\n\ntwo"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\ntwo"));
+        QCOMPARE(edit.caret(), 3);
+
+        // Return on a blank line writes one break, and Backspace takes one.
+        edit.load(QStringLiteral("one\n\ntwo"), 4);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\ntwo"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\ntwo"));
+
+        edit.load(QStringLiteral("one\n\ntwo"), 4);
+        edit.returnKey();
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n\n\ntwo"));
+        edit.backspaceKey();
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\ntwo"));
+
+        edit.load(QStringLiteral("one\n  \ntwo"), 4);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n  \ntwo"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n  \ntwo"));
+
+        // On the blank line a document ends with, Backspace takes one break.
+        edit.load(QStringLiteral("one\n"), 4);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\n"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n"));
+
+        edit.load(QStringLiteral("one\n\ntwo"), 8);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\ntwo\n\n"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\ntwo\n"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n\ntwo"));
+
+        edit.load(QString(), 0);
+        edit.returnKey();
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("\n\n"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("\n"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QString());
+
+        edit.load(QStringLiteral("   "), 3);
+        edit.returnKey();
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("   \n\n"));
+        edit.backspaceKey();
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("   "));
+
+        edit.load(QStringLiteral("two"), 0);
+        edit.returnKey();
+        QCOMPARE(edit.text(), QStringLiteral("\n\ntwo"));
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("two"));
+        QCOMPARE(edit.caret(), 0);
+
+        edit.load(QStringLiteral("one\n  \n\ntwo"), 8);
+        edit.backspaceKey();
+        QCOMPARE(edit.text(), QStringLiteral("one\n  two"));
+        QCOMPARE(edit.caret(), 6);
+    }
+
+    // Every rule is one edit, so one undo takes it back whole.
+    void markdownEditsUndoInOneStep() {
+        const auto undoes = [](const QString &text, int anchor, int position,
+                               const std::function<void(QTextCursor &)> &rule) {
+            EditCase edit;
+            edit.load(text, anchor, position);
+            rule(edit.cursor);
+            if (edit.text() == text)
+                return false;
+            edit.document.undo();
+            return edit.text() == text;
+        };
+        QVERIFY(undoes(QStringLiteral("a b c"), 2, 3, [](QTextCursor &cursor) {
+            MarkdownEdits::toggleWrap(cursor, QStringLiteral("**"), std::nullopt);
+        }));
+        QVERIFY(undoes(QStringLiteral("word"), 0, 4, [](QTextCursor &cursor) {
+            MarkdownEdits::insertLink(cursor, QStringLiteral("https://x.y"));
+        }));
+        QVERIFY(undoes(QStringLiteral(" word "), 0, 6, [](QTextCursor &cursor) {
+            MarkdownEdits::pasteUrlAsLink(cursor, QStringLiteral("https://x.y"));
+        }));
+        QVERIFY(undoes(QStringLiteral("- item"), 6, -1, [](QTextCursor &cursor) {
+            MarkdownEdits::smartReturn(cursor, false, false);
+        }));
+        QVERIFY(undoes(QStringLiteral("one\n\ntwo"), 5, -1, [](QTextCursor &cursor) {
+            MarkdownEdits::deleteParagraphBreakBehind(cursor);
+        }));
+        QVERIFY(undoes(QStringLiteral("abc"), 1, -1, [](QTextCursor &cursor) {
+            MarkdownEdits::replaceRange(cursor, 0, 3, QStringLiteral("x\r\ny"), std::pair{0, 1});
+        }));
     }
 
     void findsLinesWithoutCopyingTheText() {
