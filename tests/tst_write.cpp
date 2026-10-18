@@ -24,6 +24,8 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
+#include <QShortcut>
+#include <QStatusBar>
 #include <QVBoxLayout>
 #include <QScrollBar>
 #include <QInputMethodEvent>
@@ -35,6 +37,7 @@
 
 #include "appeventfilter.h"
 #include "backend.h"
+#include "mainwindow.h"
 #include "markdowneditor.h"
 #include "markdownedits.h"
 #include "markdownhighlighter.h"
@@ -326,6 +329,49 @@ struct FindFixture {
                                                                         : QStringLiteral("other");
         }
         return {};
+    }
+};
+
+// A shown MainWindow on a Backend of its own.
+struct WindowFixture {
+    Backend backend;
+    MainWindow window{&backend};
+
+    bool show() {
+        window.show();
+        window.activateWindow();
+        return QTest::qWaitForWindowActive(&window);
+    }
+    MarkdownEditor *editor() const { return window.editor(); }
+    void load(const QString &text, int caret = 0) {
+        editor()->setPlainText(text);
+        QTextCursor cursor = editor()->textCursor();
+        cursor.setPosition(caret);
+        editor()->setTextCursor(cursor);
+    }
+    void select(int start, int end) {
+        QTextCursor cursor = editor()->textCursor();
+        cursor.setPosition(start);
+        cursor.setPosition(end, QTextCursor::KeepAnchor);
+        editor()->setTextCursor(cursor);
+    }
+    QString text() const { return editor()->toPlainText(); }
+    // The menu command with this text.
+    QAction *command(const QString &text) const {
+        const QList<QAction *> actions = window.findChildren<QAction *>();
+        for (QAction *action : actions) {
+            if (action->text() == text)
+                return action;
+        }
+        return nullptr;
+    }
+    // Runs a command as choosing it from the menu bar does, without its key.
+    bool choose(const QString &text) const {
+        QAction *action = command(text);
+        if (!action || !action->isEnabled())
+            return false;
+        action->trigger();
+        return true;
     }
 };
 
@@ -1971,6 +2017,246 @@ private slots:
         QTRY_VERIFY(fixture.editor->hasFocus());
     }
 
+    void putsEveryCommandInTheMenuBar() {
+        WindowFixture fixture;
+        // Each menu as its title followed by its items, written out as macOS
+        // shows them, keys and all, and a separator as "-".
+        QStringList shown;
+        for (QAction *menuAction : fixture.window.menuBar()->actions()) {
+            QMenu *menu = menuAction->menu();
+            QVERIFY(menu);
+            QStringList entries;
+            for (QAction *action : menu->actions()) {
+                if (action->isSeparator()) {
+                    entries += QStringLiteral("-");
+                    continue;
+                }
+                QVERIFY2(action->menuRole() == QAction::NoRole, qPrintable(action->text()));
+                const QString keys = action->shortcut().toString(QKeySequence::NativeText);
+                entries += keys.isEmpty() ? action->text() : action->text() + u' ' + keys;
+            }
+            shown += menu->title() + QStringLiteral(": ") + entries.join(QStringLiteral(" | "));
+        }
+
+        QCOMPARE(shown, QStringList({
+            QStringLiteral("File: New Window ⌘N | Open… ⌘O | - | Save ⌘S | Save As… ⇧⌘S | - | "
+                           "Print… ⌘P | - | Close Window ⌘W"),
+            QStringLiteral("Edit: Undo ⌘Z | Redo ⇧⌘Z | - | Cut ⌘X | Copy ⌘C | Paste ⌘V | "
+                           "Select All ⌘A | Copy as HTML ⇧⌘C | - | Find ⌘F | "
+                           "Find and Replace ⌥⌘F | - | Bold ⌘B | Italic ⌘I | "
+                           "Strikethrough ⇧⌘X | Link ⌘K"),
+            QStringLiteral("View: Bigger ⌘= | Smaller ⌘- | Actual Size ⌘0 | Font… | - | "
+                           "Enter Full Screen ⌃⌘F"),
+            QStringLiteral("Window: Minimize ⌘M | Zoom"),
+        }));
+    }
+
+    void givesEveryKeyOneCommand() {
+        WindowFixture fixture;
+        // Qt finds a sequence that two commands claim ambiguous and runs
+        // neither, so no key may belong to a menu item and a shortcut both.
+        QStringList sequences;
+        for (QAction *action : fixture.window.findChildren<QAction *>()) {
+            for (const QKeySequence &sequence : action->shortcuts())
+                sequences += sequence.toString();
+        }
+        for (QShortcut *shortcut : fixture.window.findChildren<QShortcut *>()) {
+            for (const QKeySequence &sequence : shortcut->keys())
+                sequences += sequence.toString();
+        }
+        QVERIFY(sequences.size() > 25);
+        QStringList unique = sequences;
+        unique.removeDuplicates();
+        for (const QString &sequence : std::as_const(unique))
+            QVERIFY2(sequences.count(sequence) == 1, qPrintable(sequence + " is taken twice"));
+    }
+
+    void runsEditCommandsFromTheMenu() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.editor()->setFocus();
+
+        const QList<std::pair<QString, QString>> wraps = {
+            { QStringLiteral("Bold"), QStringLiteral("**word** here") },
+            { QStringLiteral("Italic"), QStringLiteral("*word* here") },
+            { QStringLiteral("Strikethrough"), QStringLiteral("~~word~~ here") },
+        };
+        for (const auto &[command, wrapped] : wraps) {
+            fixture.load(QStringLiteral("word here"));
+            fixture.select(0, 4);
+            QVERIFY(fixture.choose(command));
+            QCOMPARE(fixture.text(), wrapped);
+        }
+
+        QGuiApplication::clipboard()->setText(QStringLiteral("https://example.com"));
+        fixture.load(QStringLiteral("word here"));
+        fixture.select(0, 4);
+        QVERIFY(fixture.choose(QStringLiteral("Link")));
+        QCOMPARE(fixture.text(), QStringLiteral("[word](https://example.com) here"));
+
+        // Paste links a URL over selected text, from the menu as from the key,
+        // and pastes anything else as plain text.
+        fixture.load(QStringLiteral("word here"));
+        fixture.select(0, 4);
+        QTest::keyClick(fixture.editor(), Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(fixture.text(), QStringLiteral("[word](https://example.com) here"));
+        fixture.load(QStringLiteral("word here"));
+        fixture.select(0, 4);
+        QVERIFY(fixture.choose(QStringLiteral("Paste")));
+        QCOMPARE(fixture.text(), QStringLiteral("[word](https://example.com) here"));
+        auto *rich = new QMimeData;
+        rich->setHtml(QStringLiteral("<b>bold</b>"));
+        rich->setText(QStringLiteral("bold"));
+        QGuiApplication::clipboard()->setMimeData(rich);
+        fixture.load(QStringLiteral("word here"));
+        fixture.select(5, 9);
+        QVERIFY(fixture.choose(QStringLiteral("Paste")));
+        QCOMPARE(fixture.text(), QStringLiteral("word bold"));
+
+        fixture.select(0, 4);
+        QVERIFY(fixture.choose(QStringLiteral("Copy")));
+        QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("word"));
+        QVERIFY(fixture.choose(QStringLiteral("Cut")));
+        QCOMPARE(fixture.text(), QStringLiteral(" bold"));
+        QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("word"));
+        QVERIFY(fixture.choose(QStringLiteral("Undo")));
+        QCOMPARE(fixture.text(), QStringLiteral("word bold"));
+        QVERIFY(fixture.choose(QStringLiteral("Redo")));
+        QCOMPARE(fixture.text(), QStringLiteral(" bold"));
+        QVERIFY(fixture.choose(QStringLiteral("Select All")));
+        QCOMPARE(fixture.editor()->textCursor().selectedText(), QStringLiteral(" bold"));
+
+        QVERIFY(fixture.choose(QStringLiteral("Copy as HTML")));
+        QVERIFY(QGuiApplication::clipboard()->mimeData()->hasHtml());
+
+        // In the find field, the Edit menu edits the find field.
+        QVERIFY(fixture.choose(QStringLiteral("Find")));
+        QLineEdit *searchField = fixture.window.findBar()->searchField();
+        QTRY_VERIFY(searchField->hasFocus());
+        QGuiApplication::clipboard()->setText(QStringLiteral("bold"));
+        QVERIFY(fixture.choose(QStringLiteral("Paste")));
+        QCOMPARE(searchField->text(), QStringLiteral("bold"));
+        QCOMPARE(fixture.text(), QStringLiteral(" bold"));
+        QVERIFY(fixture.choose(QStringLiteral("Select All")));
+        QCOMPARE(searchField->selectedText(), QStringLiteral("bold"));
+        fixture.backend.discardRecovery();
+    }
+
+    void runsDocumentAndWindowCommandsFromTheMenu() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("menu.md"));
+        writeFile(path, "before\n");
+
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        Backend &backend = fixture.backend;
+        backend.open(QUrl::fromLocalFile(path));
+        fixture.load(QStringLiteral("after\n"));
+        QVERIFY(fixture.choose(QStringLiteral("Save")));
+        QCOMPARE(readFile(path), QByteArray("after\n"));
+
+        QVERIFY(fixture.choose(QStringLiteral("Find and Replace")));
+        QVERIFY(fixture.window.findBar()->isOpen());
+        QVERIFY(fixture.window.findBar()->replaceField()->isVisible());
+        fixture.window.findBar()->dismiss();
+
+        const qreal textScale = backend.textScale();
+        QVERIFY(fixture.choose(QStringLiteral("Bigger")));
+        QVERIFY(backend.textScale() > textScale);
+        QVERIFY(fixture.choose(QStringLiteral("Actual Size")));
+        QCOMPARE(backend.textScale(), 1.0);
+        QVERIFY(fixture.choose(QStringLiteral("Smaller")));
+        QVERIFY(backend.textScale() < 1.0);
+        QVERIFY(fixture.choose(QStringLiteral("Actual Size")));
+
+        // The way out of full screen keeps its own text and its place in View,
+        // where macOS would take an "Exit" item for Quit by its words alone.
+        QVERIFY(fixture.choose(QStringLiteral("Enter Full Screen")));
+        QTRY_VERIFY(fixture.window.isFullScreen());
+        QAction *exitFullScreen = fixture.command(QStringLiteral("Exit Full Screen"));
+        QVERIFY(exitFullScreen);
+        QCOMPARE(exitFullScreen->menuRole(), QAction::NoRole);
+        exitFullScreen->trigger();
+        QTRY_VERIFY(!fixture.window.isFullScreen());
+
+        QSignalSpy saveDialogSpy(&backend, &Backend::saveDialogRequested);
+        QVERIFY(fixture.choose(QStringLiteral("Save As…")));
+        QCOMPARE(saveDialogSpy.count(), 1);
+        QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
+        QVERIFY(fixture.choose(QStringLiteral("Open…")));
+        QCOMPARE(openDialogSpy.count(), 1);
+        backend.discardRecovery();
+    }
+
+    void leavesMacSystemShortcutsAlone() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.editor()->setFocus();
+        // ⌘H hides the app and ⌃F moves the caret, so neither may be taken.
+        QTest::keyClick(&fixture.window, Qt::Key_H, Qt::ControlModifier);
+        QVERIFY(!fixture.window.findBar()->isOpen());
+        QTest::keyClick(&fixture.window, Qt::Key_F, Qt::MetaModifier);
+        QVERIFY(!fixture.window.isFullScreen());
+        QTest::keyClick(&fixture.window, Qt::Key_F, Qt::ControlModifier | Qt::MetaModifier);
+        QTRY_VERIFY(fixture.window.isFullScreen());
+        fixture.window.showNormal();
+    }
+
+    void growsTextFromEitherPlusKey() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.editor()->setFocus();
+        // Qt resolves a shifted = to Ctrl++ rather than to Ctrl+=, and a layout
+        // that puts + on its own key never produces Ctrl+= at all.
+        QTest::keyClick(fixture.editor(), Qt::Key_Plus, Qt::ControlModifier);
+        QCOMPARE(fixture.backend.textScale(), 1.1);
+        QTest::keyClick(fixture.editor(), Qt::Key_Equal, Qt::ControlModifier);
+        QCOMPARE(fixture.backend.textScale(), 1.25);
+        QTest::keyClick(fixture.editor(), Qt::Key_Minus, Qt::ControlModifier);
+        QCOMPARE(fixture.backend.textScale(), 1.1);
+        fixture.backend.resetTextSize();
+    }
+
+    void titlesTheWindowAfterItsFile() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        QCOMPARE(fixture.window.windowTitle(), QStringLiteral("Untitled.md[*]"));
+        QVERIFY(!fixture.window.isWindowModified());
+
+        fixture.editor()->setFocus();
+        QTest::keyClick(fixture.editor(), Qt::Key_A);
+        QTRY_VERIFY(fixture.window.isWindowModified());
+
+        const QString path = directory.filePath(QStringLiteral("x.md"));
+        fixture.backend.saveAs(QUrl::fromLocalFile(path));
+        QCOMPARE(fixture.window.windowTitle(), QStringLiteral("x.md[*]"));
+        QVERIFY(!fixture.window.isWindowModified());
+        QCOMPARE(fixture.window.windowFilePath(), path);
+    }
+
+    void showsStatusAndWordCount() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        auto *words = fixture.window.findChild<QLabel *>(QStringLiteral("wordCountLabel"));
+        auto *status = fixture.window.findChild<QLabel *>(QStringLiteral("statusLabel"));
+        QVERIFY(words && status);
+
+        fixture.editor()->setFocus();
+        QTest::keyClicks(fixture.editor(), QStringLiteral("one"));
+        QTRY_COMPARE(words->text(), QStringLiteral("1 Word"));
+        QTest::keyClicks(fixture.editor(), QStringLiteral(" two"));
+        QTRY_COMPARE(words->text(), QStringLiteral("2 Words"));
+
+        fixture.backend.saveAs(QUrl::fromLocalFile(directory.filePath(QStringLiteral("s.md"))));
+        QVERIFY(!fixture.backend.status().isEmpty());
+        QCOMPARE(status->text(), fixture.backend.status());
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());
@@ -2155,293 +2441,6 @@ private slots:
         QTRY_VERIFY(!dialog->property("visible").toBool());
         QVERIFY(chooseFromMenu(window, QStringLiteral("Find")));
         QVERIFY(window->property("searchOpen").toBool());
-    }
-
-    void putsEveryCommandInTheMenuBar() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-        QObject *menuBar = window->property("menuBar").value<QObject *>();
-        QVERIFY(menuBar);
-
-        // Each menu as its title followed by its items, a separator as "-".
-        QQmlExpression read(qmlContext(menuBar), menuBar, QStringLiteral(R"JS(
-            Array.from({ length: count }, (_, i) => {
-                const menu = menuAt(i);
-                return [menu.title].concat(Array.from({ length: menu.count }, (_, j) => {
-                    const action = menu.actionAt(j);
-                    return action ? action.text + "\t" + (action.shortcut || "") : "-";
-                }));
-            })
-        )JS"));
-        const QVariantList menus = read.evaluate().toList();
-        QVERIFY2(!read.hasError(), qPrintable(read.error().toString()));
-
-        // Written out as macOS shows them, keys and all.
-        QStringList shown;
-        for (const QVariant &menu : menus) {
-            QStringList entries = menu.toStringList();
-            const QString title = entries.takeFirst();
-            for (QString &entry : entries) {
-                const QStringList parts = entry.split(u'\t');
-                if (parts.size() == 2) {
-                    const QString keys = QKeySequence::fromString(parts.at(1))
-                                             .toString(QKeySequence::NativeText);
-                    entry = keys.isEmpty() ? parts.at(0) : parts.at(0) + u' ' + keys;
-                }
-            }
-            shown += title + QStringLiteral(": ") + entries.join(QStringLiteral(" | "));
-        }
-
-        QCOMPARE(shown, QStringList({
-            QStringLiteral("File: New Window ⌘N | Open… ⌘O | - | Save ⌘S | Save As… ⇧⌘S | - | "
-                           "Print… ⌘P | - | Close Window ⌘W"),
-            QStringLiteral("Edit: Undo ⌘Z | Redo ⇧⌘Z | - | Cut ⌘X | Copy ⌘C | Paste ⌘V | "
-                           "Select All ⌘A | Copy as HTML ⇧⌘C | - | Find ⌘F | "
-                           "Find and Replace ⌥⌘F | - | Bold ⌘B | Italic ⌘I | "
-                           "Strikethrough ⇧⌘X | Link ⌘K"),
-            QStringLiteral("View: Bigger ⌘= | Smaller ⌘- | Actual Size ⌘0 | - | "
-                           "Enter Full Screen ⌃⌘F"),
-            QStringLiteral("Window: Minimize ⌘M | Zoom"),
-            QStringLiteral("Help: Keyboard Shortcuts ⌘?"),
-        }));
-    }
-
-    void givesEveryKeyOneCommand() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        // Qt finds a sequence that two commands claim ambiguous and runs
-        // neither, so no key may belong to a menu item and a Shortcut both.
-        QStringList sequences;
-        const QList<QObject *> objects = window->findChildren<QObject *>();
-        for (QObject *object : objects) {
-            QVariantList claimed;
-            if (object->inherits("QQuickAction")) {
-                claimed += object->property("shortcut");
-            } else if (object->inherits("QQuickShortcut")) {
-                claimed += object->property("sequence");
-                claimed += object->property("sequences").toList();
-            }
-            for (const QVariant &sequence : std::as_const(claimed)) {
-                if (!sequence.toString().isEmpty())
-                    sequences += QKeySequence::fromString(sequence.toString()).toString();
-            }
-        }
-
-        QVERIFY(sequences.size() > 25);
-        QStringList unique = sequences;
-        unique.removeDuplicates();
-        for (const QString &sequence : std::as_const(unique))
-            QVERIFY2(sequences.count(sequence) == 1, qPrintable(sequence + " is taken twice"));
-    }
-
-    void runsEditCommandsFromTheMenu() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *searchField = window->findChild<QObject *>(QStringLiteral("searchField"));
-        QVERIFY(editor && searchField);
-        const auto text = [editor] { return editor->property("text").toString(); };
-        const auto select = [editor](int start, int end) {
-            QMetaObject::invokeMethod(editor, "select", Q_ARG(int, start), Q_ARG(int, end));
-        };
-
-        const QList<std::pair<QString, QString>> wraps = {
-            { QStringLiteral("Bold"), QStringLiteral("**word** here") },
-            { QStringLiteral("Italic"), QStringLiteral("*word* here") },
-            { QStringLiteral("Strikethrough"), QStringLiteral("~~word~~ here") },
-        };
-        for (const auto &[command, wrapped] : wraps) {
-            editor->setProperty("text", QStringLiteral("word here"));
-            select(0, 4);
-            QVERIFY(chooseFromMenu(window, command));
-            QCOMPARE(text(), wrapped);
-        }
-
-        QGuiApplication::clipboard()->setText(QStringLiteral("https://example.com"));
-        editor->setProperty("text", QStringLiteral("word here"));
-        select(0, 4);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Link")));
-        QCOMPARE(text(), QStringLiteral("[word](https://example.com) here"));
-
-        // Paste links a URL over selected text, from the menu as from the key,
-        // and pastes anything else as plain text.
-        editor->setProperty("text", QStringLiteral("word here"));
-        select(0, 4);
-        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
-        QCOMPARE(text(), QStringLiteral("[word](https://example.com) here"));
-        editor->setProperty("text", QStringLiteral("word here"));
-        select(0, 4);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Paste")));
-        QCOMPARE(text(), QStringLiteral("[word](https://example.com) here"));
-        auto *rich = new QMimeData;
-        rich->setHtml(QStringLiteral("<b>bold</b>"));
-        rich->setText(QStringLiteral("bold"));
-        QGuiApplication::clipboard()->setMimeData(rich);
-        editor->setProperty("text", QStringLiteral("word here"));
-        select(5, 9);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Paste")));
-        QCOMPARE(text(), QStringLiteral("word bold"));
-
-        select(0, 4);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Copy")));
-        QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("word"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Cut")));
-        QCOMPARE(text(), QStringLiteral(" bold"));
-        QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("word"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Undo")));
-        QCOMPARE(text(), QStringLiteral("word bold"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Redo")));
-        QCOMPARE(text(), QStringLiteral(" bold"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Select All")));
-        QCOMPARE(editor->property("selectedText").toString(), QStringLiteral(" bold"));
-
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Copy as HTML")));
-        QVERIFY(QGuiApplication::clipboard()->mimeData()->hasHtml());
-
-        // In the find field, the Edit menu edits the find field.
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Find")));
-        QVERIFY(searchField->property("activeFocus").toBool());
-        QGuiApplication::clipboard()->setText(QStringLiteral("bold"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Paste")));
-        QCOMPARE(searchField->property("text").toString(), QStringLiteral("bold"));
-        QCOMPARE(text(), QStringLiteral(" bold"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Select All")));
-        QCOMPARE(searchField->property("selectedText").toString(), QStringLiteral("bold"));
-        backend.discardRecovery();
-    }
-
-    void runsDocumentAndWindowCommandsFromTheMenu() {
-        QTemporaryDir directory;
-        QVERIFY(directory.isValid());
-        const QString path = directory.filePath(QStringLiteral("menu.md"));
-        writeFile(path, "before\n");
-
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *unsavedDialog = window->findChild<QObject *>(QStringLiteral("unsavedChangesDialog"));
-        QObject *shortcutsDialog = window->findChild<QObject *>(QStringLiteral("shortcutsDialog"));
-        QVERIFY(editor && unsavedDialog && shortcutsDialog);
-
-        backend.open(QUrl::fromLocalFile(path));
-        editor->setProperty("text", QStringLiteral("after\n"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Save")));
-        QCOMPARE(readFile(path), QByteArray("after\n"));
-
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Find and Replace")));
-        QVERIFY(window->property("searchOpen").toBool());
-        QVERIFY(window->property("replaceOpen").toBool());
-        QMetaObject::invokeMethod(window, "closeSearch");
-
-        const qreal textScale = backend.textScale();
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Bigger")));
-        QVERIFY(backend.textScale() > textScale);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Actual Size")));
-        QCOMPARE(backend.textScale(), 1.0);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Smaller")));
-        QVERIFY(backend.textScale() < 1.0);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Actual Size")));
-
-        // macOS moves an item whose text starts with "Exit" to the app menu
-        // as Quit, so the way out of full screen must only look like it.
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Enter Full Screen")));
-        QTRY_COMPARE(window->visibility(), QWindow::FullScreen);
-        QObject *exitFullScreen = menuCommand(window, QStringLiteral("​Exit Full Screen"));
-        QVERIFY(exitFullScreen);
-        QVERIFY(!exitFullScreen->property("text").toString().startsWith(QStringLiteral("Exit")));
-        QVERIFY(QMetaObject::invokeMethod(exitFullScreen, "trigger"));
-        QTRY_COMPARE(window->visibility(), QWindow::Windowed);
-
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Keyboard Shortcuts")));
-        QTRY_VERIFY(shortcutsDialog->property("opened").toBool());
-        QVERIFY(!menuCommand(window, QStringLiteral("Save"))->property("enabled").toBool());
-        QMetaObject::invokeMethod(shortcutsDialog, "close");
-        QTRY_VERIFY(!shortcutsDialog->property("visible").toBool());
-
-        editor->setProperty("text", QStringLiteral("unsaved\n"));
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Close Window")));
-        QTRY_VERIFY(unsavedDialog->property("opened").toBool());
-        QVERIFY(window->isVisible());
-        QMetaObject::invokeMethod(unsavedDialog, "reject");
-        QTRY_VERIFY(!unsavedDialog->property("visible").toBool());
-
-        QSignalSpy saveDialogSpy(&backend, &Backend::saveDialogRequested);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Save As…")));
-        QCOMPARE(saveDialogSpy.count(), 1);
-        QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Open…")));
-        QCOMPARE(openDialogSpy.count(), 1);
-        backend.discardRecovery();
-    }
-
-    void leavesMacSystemShortcutsAlone() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        QObject *shortcutList = window->findChild<QObject *>(QStringLiteral("shortcutList"));
-        QVERIFY(shortcutList);
-        const QString help = shortcutList->property("text").toString();
-
-        QVERIFY(help.contains(QStringLiteral("⌥⌘F  Find and Replace")));
-        QVERIFY(help.contains(QStringLiteral("⌘W  Close Window")));
-        QVERIFY(!help.contains(QStringLiteral("Ctrl")));
-
-        // ⌘H hides the app and ⌃F moves the caret, so neither may be taken.
-        QTest::keyClick(window, Qt::Key_H, Qt::ControlModifier);
-        QVERIFY(!window->property("searchOpen").toBool());
-        QTest::keyClick(window, Qt::Key_F, Qt::MetaModifier);
-        QCOMPARE(window->visibility(), QWindow::Windowed);
-        QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier | Qt::MetaModifier);
-        QTRY_COMPARE(window->visibility(), QWindow::FullScreen);
     }
 
     void togglesTheFontPickerFromItsButton() {
@@ -3227,33 +3226,6 @@ private slots:
         backend.resetTextSize();
         QCOMPARE(backend.textScale(), 1.0);
         QCOMPARE(Backend().textScale(), 1.0);
-    }
-
-    void growsTextFromEitherPlusKey() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        QQuickWindow *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-
-        // Qt resolves a shifted = to Ctrl++ rather than to Ctrl+=, and a layout
-        // that puts + on its own key never produces Ctrl+= at all.
-        QTest::keyClick(window, Qt::Key_Plus, Qt::ControlModifier);
-        QCOMPARE(backend.textScale(), 1.1);
-        QTest::keyClick(window, Qt::Key_Equal, Qt::ControlModifier);
-        QCOMPARE(backend.textScale(), 1.25);
-        QTest::keyClick(window, Qt::Key_Minus, Qt::ControlModifier);
-        QCOMPARE(backend.textScale(), 1.1);
-
-        backend.resetTextSize();
     }
 
 

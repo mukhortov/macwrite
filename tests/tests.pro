@@ -13,6 +13,7 @@ SOURCES += \
     ../src/backend.cpp \
     ../src/cli.cpp \
     ../src/findbar.cpp \
+    ../src/mainwindow.cpp \
     ../src/markdowneditor.cpp \
     ../src/markdownedits.cpp \
     ../src/markdownhighlighter.cpp \
@@ -23,6 +24,7 @@ HEADERS += \
     ../src/backend.h \
     ../src/cli.h \
     ../src/findbar.h \
+    ../src/mainwindow.h \
     ../src/markdowneditor.h \
     ../src/markdownedits.h \
     ../src/markdownhighlighter.h \
