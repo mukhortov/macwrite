@@ -21,8 +21,12 @@ SOURCES += \
 HEADERS += \
     ../../src/backend.h \
     ../../src/findbar.h \
+    ../../src/macwindow.h \
     ../../src/mainwindow.h \
     ../../src/markdowneditor.h \
     ../../src/markdownedits.h \
     ../../src/markdownhighlighter.h \
     ../../src/plaintextlayout.h
+
+OBJECTIVE_SOURCES += ../../src/macwindow.mm
+LIBS += -framework AppKit
