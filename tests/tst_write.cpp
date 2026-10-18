@@ -32,6 +32,7 @@
 
 #include "appeventfilter.h"
 #include "backend.h"
+#include "macwindow.h"
 #include "mainwindow.h"
 #include "markdowneditor.h"
 #include "markdownedits.h"
@@ -2925,6 +2926,50 @@ private slots:
         QTest::keyClick(asked, Qt::Key_D, Qt::ControlModifier);
         QTRY_VERIFY(!fixture.window.isVisible());
         QCOMPARE(readFile(path), QByteArray());
+    }
+
+    // The status line is part of the page: the editor's colour edge to edge,
+    // its words muted and clear of the window's rounded corners.
+    void paintsTheStatusLineInTheEditorsColours() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        auto *line = fixture.window.findChild<QWidget *>(QStringLiteral("statusLine"));
+        auto *status = fixture.window.findChild<QLabel *>(QStringLiteral("statusLabel"));
+        auto *words = fixture.window.findChild<QLabel *>(QStringLiteral("wordCountLabel"));
+        QVERIFY(line && status && words);
+        QVERIFY(!fixture.window.findChild<QStatusBar *>());
+
+        const auto check = [&](bool dark) {
+            const QColor page(fixture.backend.themeBackground());
+            const QImage image = line->grab().toImage();
+            QCOMPARE(image.pixelColor(1, 1).name(), page.name());
+            QCOMPARE(image.pixelColor(image.width() - 2, image.height() - 2).name(), page.name());
+            const QColor muted(dark ? QStringLiteral("#909191") : QStringLiteral("#aeb1b5"));
+            QCOMPARE(status->palette().color(QPalette::WindowText), muted);
+            QCOMPARE(words->palette().color(QPalette::WindowText), muted);
+        };
+        fixture.backend.setDarkMode(true);
+        check(true);
+        fixture.backend.setDarkMode(false);
+        check(false);
+
+        fixture.load(QStringLiteral("one two three"));
+        QTRY_COMPARE(words->text(), QStringLiteral("3 Words"));
+        QVERIFY(status->geometry().left() >= 12);
+        QVERIFY(line->width() - words->geometry().right() >= 12);
+        QVERIFY(words->width() >= words->sizeHint().width());
+    }
+
+    // The title bar is the page's colour too, not a strip of macOS grey.
+    void coloursTheTitleBarLikeThePage() {
+        if (QGuiApplication::platformName() != QLatin1String("cocoa"))
+            QSKIP("The title bar is AppKit's; run on the Cocoa platform.");
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.backend.setDarkMode(true);
+        QCOMPARE(MacWindow::titleBarColour(&fixture.window).name(), QStringLiteral("#101010"));
+        fixture.backend.setDarkMode(false);
+        QCOMPARE(MacWindow::titleBarColour(&fixture.window).name(), QStringLiteral("#ffffff"));
     }
 
     void composesTextWithAnInputMethod() {

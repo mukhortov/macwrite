@@ -14,12 +14,13 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QShortcut>
-#include <QStatusBar>
+#include <QHBoxLayout>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include "backend.h"
 #include "findbar.h"
+#include "macwindow.h"
 #include "markdowneditor.h"
 
 namespace {
@@ -56,20 +57,31 @@ MainWindow::MainWindow(Backend *backend, QWidget *parent)
     auto *central = new QWidget(this);
     m_editor = new MarkdownEditor(m_backend, central);
     m_findBar = new FindBar(m_editor, m_backend, central);
+    // A plain row rather than a QStatusBar, which brings a colour and a
+    // border of its own and runs its words into the window's corners.
+    m_statusLine = new QWidget(central);
+    m_statusLine->setObjectName(QStringLiteral("statusLine"));
+    m_statusLine->setAutoFillBackground(true);
+    m_status = new QLabel(m_statusLine);
+    m_status->setObjectName(QStringLiteral("statusLabel"));
+    m_wordCount = new QLabel(m_statusLine);
+    m_wordCount->setObjectName(QStringLiteral("wordCountLabel"));
+    QFont small = m_status->font();
+    small.setPointSizeF(11);
+    m_status->setFont(small);
+    m_wordCount->setFont(small);
+    auto *statusRow = new QHBoxLayout(m_statusLine);
+    statusRow->setContentsMargins(14, 4, 14, 8);
+    statusRow->addWidget(m_status, 1);
+    statusRow->addWidget(m_wordCount);
+
     auto *column = new QVBoxLayout(central);
     column->setContentsMargins(0, 0, 0, 0);
     column->setSpacing(0);
     column->addWidget(m_findBar);
     column->addWidget(m_editor, 1);
+    column->addWidget(m_statusLine);
     setCentralWidget(central);
-
-    m_status = new QLabel(this);
-    m_status->setObjectName(QStringLiteral("statusLabel"));
-    m_wordCount = new QLabel(this);
-    m_wordCount->setObjectName(QStringLiteral("wordCountLabel"));
-    statusBar()->setSizeGripEnabled(false);
-    statusBar()->addWidget(m_status, 1);
-    statusBar()->addPermanentWidget(m_wordCount);
 
     buildMenus();
 
@@ -77,6 +89,8 @@ MainWindow::MainWindow(Backend *backend, QWidget *parent)
     connect(m_backend, &Backend::modifiedChanged, this, &MainWindow::updateTitle);
     connect(m_backend, &Backend::statusChanged, this, &MainWindow::updateStatus);
     connect(m_backend, &Backend::wordCountChanged, this, &MainWindow::updateWordCount);
+    connect(m_backend, &Backend::themeColorsChanged, this, &MainWindow::applyTheme);
+    connect(m_backend, &Backend::darkModeChanged, this, &MainWindow::applyTheme);
     connect(m_backend, &Backend::openDialogRequested, this, &MainWindow::showOpenPanel);
     connect(m_backend, &Backend::saveDialogRequested, this, &MainWindow::showSavePanel);
     connect(m_backend, &Backend::externalChangeDetected, this, &MainWindow::askAboutExternalChange);
@@ -92,6 +106,7 @@ MainWindow::MainWindow(Backend *backend, QWidget *parent)
     updateTitle();
     updateStatus();
     updateWordCount();
+    applyTheme();
     m_editor->setFocus();
 }
 
@@ -274,6 +289,21 @@ void MainWindow::updateStatus() {
     m_status->setToolTip(status);
 }
 
+void MainWindow::applyTheme() {
+    const QColor page(m_backend->themeBackground());
+    const QColor muted(m_backend->darkMode() ? QStringLiteral("#909191") : QStringLiteral("#aeb1b5"));
+    QPalette colours = palette();
+    colours.setColor(QPalette::Window, page);
+    setPalette(colours);
+    QPalette line = m_statusLine->palette();
+    line.setColor(QPalette::Window, page);
+    line.setColor(QPalette::WindowText, muted);
+    m_statusLine->setPalette(line);
+    m_status->setPalette(line);
+    m_wordCount->setPalette(line);
+    MacWindow::setTitleBarColour(this, page);
+}
+
 void MainWindow::updateWordCount() {
     const int words = m_backend->wordCount();
     m_wordCount->setText(words == 1 ? QStringLiteral("1 Word") : QStringLiteral("%1 Words").arg(words));
@@ -290,6 +320,8 @@ void MainWindow::changeEvent(QEvent *event) {
 
 void MainWindow::showEvent(QShowEvent *event) {
     QMainWindow::showEvent(event);
+    // AppKit's window exists now, if it did not before.
+    applyTheme();
     // The print dialog sits on the window it was asked from.
     m_backend->setParentWindow(windowHandle());
 }

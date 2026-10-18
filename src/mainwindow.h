@@ -62,6 +62,9 @@ private:
     void updateTitle();
     void updateStatus();
     void updateWordCount();
+    // The window around the editor takes the page's colours: its title bar,
+    // background and status line.
+    void applyTheme();
     void updateCommands();
     // Keeps the commands off while the dialog waits on the writer.
     void waitOn(QDialog *dialog);
@@ -79,6 +82,7 @@ private:
     Backend *m_backend;
     MarkdownEditor *m_editor;
     FindBar *m_findBar;
+    QWidget *m_statusLine;
     QLabel *m_status;
     QLabel *m_wordCount;
     QAction *m_fullScreen = nullptr;

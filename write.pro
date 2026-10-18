@@ -19,6 +19,7 @@ HEADERS += \
     src/backend.h \
     src/cli.h \
     src/findbar.h \
+    src/macwindow.h \
     src/mainwindow.h \
     src/markdowneditor.h \
     src/markdownedits.h \
@@ -40,5 +41,8 @@ SOURCES += \
     src/plaintextlayout.cpp \
     src/systemtheme.cpp \
     src/windowmanager.cpp
+
+OBJECTIVE_SOURCES += src/macwindow.mm
+LIBS += -framework AppKit
 
 RESOURCES += src/resources.qrc

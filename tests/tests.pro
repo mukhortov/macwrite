@@ -23,6 +23,7 @@ HEADERS += \
     ../src/backend.h \
     ../src/cli.h \
     ../src/findbar.h \
+    ../src/macwindow.h \
     ../src/mainwindow.h \
     ../src/markdowneditor.h \
     ../src/markdownedits.h \
@@ -30,3 +31,6 @@ HEADERS += \
     ../src/plaintextlayout.h \
     ../src/windowmanager.h
 
+
+OBJECTIVE_SOURCES += ../src/macwindow.mm
+LIBS += -framework AppKit
