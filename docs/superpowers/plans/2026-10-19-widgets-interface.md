@@ -238,7 +238,7 @@ public:
 
 `findsMatchesInViewAmongManyQuickly`:
 - 350,000 starts spaced 15 apart, query length 1.
-- `inRange(1'000'000, 1'003'000)` returns the 201 matches between them, with only the current one marked `current`.
+- `inRange(1'000'000, 1'003'000)` returns the 200 matches between them, none marked `current`, as the current match is the first.
 - `inRange(0, 6'000'000).size() == 2000`.
 - Both calls together take under 5 ms by `QElapsedTimer`.
 
@@ -489,7 +489,7 @@ signals:
   - Pending close or open, as in `Main.qml`: Discard calls `discardRecovery()` and then completes; Save completes only on the next `saveSucceeded`; `saveFailed`, Cancel, or cancelling the save sheet cancels, and a cancelled close emits `closeCancelled()`. `holdAutoSave(true)` while the sheet is up.
   - External change: a `QMessageBox "externalChangeSheet"` with Keep Mine (escape, and the default for a removed file) and Reload (the default otherwise).
   - Open shows `QFileDialog::getOpenFileUrl`-style application-modal panel, Save As shows a window-modal `QFileDialog` sheet. Both use the filters "Markdown files (*.md *.markdown)" and "All files (*)".
-  - View › Font… opens a `QFontDialog "fontsPanel"` at the editor's family. `fontSelected` calls `backend->setEditorFont(font.family())`.
+  - View › Font… opens a `QFontDialog "fontsPanel"` at the editor's family. `fontSelected` calls `backend->setEditorFont(font.family())`. If the native panel misbehaves on Cocoa (Task 14), fall back to `QFontDialog::DontUseNativeDialog` (spec, risk 3).
 
 - [ ] **Step 1: Port the failing tests**, answering sheets by clicking `QMessageBox::button(...)`:
   - `asksAboutUnsavedChangesBeforeClosingOrQuitting` (the single-window part);
@@ -497,9 +497,10 @@ signals:
   - `dropsAPendingCloseWhenItsSaveFails`;
   - `holdsAutoSaveWhileTheWriterDecides`;
   - `keepsTheWritersTextWhenTheChangeDialogIsDismissed`;
-  - `keepsShortcutsBehindDialogs`.
+  - `keepsShortcutsBehindDialogs`;
+  - `showsTheCaretAfterOpeningFromTheOpenDialog` (after `requestOpen` while another window has focus, the editor gets focus once the window is active, and the caret is inside the viewport).
 
-  Add `holdCommandsWhileASheetIsUp`: with the unsaved sheet open, Close Window is disabled, a second `close()` opens no second sheet, and `commandsEnabled()` is `false`. The same holds while the Fonts panel is visible.
+  Add `holdsCommandsWhileASheetIsUp`: with the unsaved sheet open, Close Window is disabled, a second `close()` opens no second sheet, and `commandsEnabled()` is `false`. The same holds while the Fonts panel is visible.
 
   Add `choosesTheEditorFontFromTheFontsPanel`: `setCurrentFont(QFont("Menlo"))` and `accept()` set `backend.editorFont()` to `"Menlo"`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
@@ -527,7 +528,7 @@ WindowGeometry cascadedGeometry() const;
 ```
 
 - `MainWindow`s have `Qt::WA_DeleteOnClose`. Accepted closes, activation and destruction drive today's `windowClosed`, `windowActivated` and `windowDestroyed`.
-- `main.cpp` builds the `WindowManager` without a QML engine. The QML files stay in the build until Task 13 and are unused.
+- `main.cpp` builds the `WindowManager` without a QML engine. The Quick style and the scaled IBM Plex Mono interface font (`applyInterfaceFont`) go, so native controls use the system font. The QML files stay in the build until Task 13 and are unused.
 
 - [ ] **Step 1: Port the failing tests to `MainWindow`**:
   - `runsEveryWindowInOneProcess`
