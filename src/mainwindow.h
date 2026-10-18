@@ -75,6 +75,7 @@ private:
     void showOpenPanel();
     void showSavePanel(const QUrl &suggestedUrl);
     void askAboutExternalChange(bool deleted, bool locallyModified);
+    void describeExternalChange(QMessageBox *sheet, bool deleted, bool locallyModified);
     // Ticks the font the text is in, in View › Font.
     void tickFont();
 

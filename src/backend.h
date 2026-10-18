@@ -175,6 +175,7 @@ private:
     void setKnownFileContents(const QByteArray &contents, bool known);
     void unwatchFiles();
     void watchCurrentFile();
+    void checkWatchedFile();
     void applyTheme();
 
     QUrl m_fileUrl;
@@ -191,6 +192,8 @@ private:
     QTimer m_recoveryTimer;
     QTimer m_autoSaveTimer;
     QFileSystemWatcher m_fileWatcher;
+    QTimer m_fileCheckTimer;
+    bool m_fileMissing = false;
     QPointer<QTextDocument> m_document;
     QPointer<QWindow> m_parentWindow;
     QPointer<MarkdownHighlighter> m_highlighter;

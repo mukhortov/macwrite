@@ -4573,6 +4573,97 @@ private slots:
         QVERIFY(backend.modified());
     }
 
+    void treatsAFileRemovedAndWrittenAgainAsChanged() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("replaced.md"));
+        writeFile(path, "hello");
+
+        Backend backend;
+        QScopedPointer<QObject> editor(makeEditor(backend));
+        QVERIFY(editor);
+        backend.open(QUrl::fromLocalFile(path));
+        QSignalSpy externalChangeSpy(&backend, &Backend::externalChangeDetected);
+
+        // The watcher sees the file gone before it is written again.
+        QVERIFY(QFile::remove(path));
+        QTest::qWait(30);
+        writeFile(path, "theirs");
+        QTRY_COMPARE(externalChangeSpy.count(), 1);
+        QCOMPARE(externalChangeSpy.first().at(0).toBool(), false);
+
+        // The new file is watched, so later edits are noticed too.
+        writeFile(path, "theirs, again");
+        QTRY_COMPARE(externalChangeSpy.count(), 2);
+        backend.reloadFromDisk();
+        QCOMPARE(editor->property("plainText").toString(), QStringLiteral("theirs, again"));
+    }
+
+    void noticesARemovedFileComingBack() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("back.md"));
+        writeFile(path, "hello");
+
+        Backend backend;
+        QScopedPointer<QObject> editor(makeEditor(backend));
+        QVERIFY(editor);
+        backend.open(QUrl::fromLocalFile(path));
+        QSignalSpy externalChangeSpy(&backend, &Backend::externalChangeDetected);
+
+        QVERIFY(QFile::remove(path));
+        QTRY_COMPARE(externalChangeSpy.count(), 1);
+        QCOMPARE(externalChangeSpy.last().at(0).toBool(), true);
+
+        writeFile(path, "theirs");
+        QTRY_COMPARE(externalChangeSpy.count(), 2);
+        QCOMPARE(externalChangeSpy.last().at(0).toBool(), false);
+
+        // And removed again before the writer answers.
+        QVERIFY(QFile::remove(path));
+        QTRY_COMPARE(externalChangeSpy.count(), 3);
+        QCOMPARE(externalChangeSpy.last().at(0).toBool(), true);
+    }
+
+    // The file can come back, or go again, while the sheet is up, and the
+    // sheet follows it rather than asking about what is no longer so.
+    void hidesReloadWhileTheFileIsRemoved() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("coming-and-going.md"));
+        writeFile(path, "theirs\n");
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.backend.open(QUrl::fromLocalFile(path));
+        fixture.load(QStringLiteral("mine\n"));
+
+        emit fixture.backend.externalChangeDetected(true, false);
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+        QMessageBox *asked = sheet(&fixture.window, QStringLiteral("externalChangeSheet"));
+        auto *reload = asked->findChild<QPushButton *>(QStringLiteral("reloadButton"));
+        auto *keep = asked->findChild<QPushButton *>(QStringLiteral("keepButton"));
+        QVERIFY(reload && keep);
+        QVERIFY(!reload->isVisible());
+
+        // There is something to reload once the file is back.
+        emit fixture.backend.externalChangeDetected(false, false);
+        QCOMPARE(sheet(&fixture.window, QStringLiteral("externalChangeSheet")), asked);
+        QCOMPARE(asked->text(), QStringLiteral("File changed"));
+        QVERIFY(reload->isVisible());
+
+        // Removed while Reload has the focus: Return keeps the text instead.
+        reload->setFocus();
+        QTRY_VERIFY(reload->hasFocus());
+        emit fixture.backend.externalChangeDetected(true, false);
+        QCOMPARE(asked->text(), QStringLiteral("File removed"));
+        QVERIFY(!reload->isVisible());
+        QTRY_VERIFY(keep->hasFocus());
+        QTest::keyClick(asked, Qt::Key_Return);
+        QTRY_VERIFY(!sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+        QCOMPARE(fixture.text(), QStringLiteral("mine\n"));
+        fixture.backend.discardRecovery();
+    }
+
     // The character formats the highlighter gives a single line of text.
 private:
     static QList<QTextCharFormat> highlightedFormats(const QString &text, int caret = -1) {

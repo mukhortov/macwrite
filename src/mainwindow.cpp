@@ -482,8 +482,12 @@ void MainWindow::showSavePanel(const QUrl &suggestedUrl) {
 }
 
 void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
-    if (m_changeSheet && m_waitingOn.contains(m_changeSheet))
+    // The file can come back, or go again, while the writer decides, and the
+    // sheet asks about it as it is now.
+    if (m_changeSheet && m_waitingOn.contains(m_changeSheet)) {
+        describeExternalChange(m_changeSheet, deleted, locallyModified);
         return;
+    }
     if (!m_waitingOn.isEmpty()) {
         m_deferredChange = std::pair{deleted, locallyModified};
         return;
@@ -493,12 +497,6 @@ void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
     sheet->setObjectName(QStringLiteral("externalChangeSheet"));
     sheet->setAttribute(Qt::WA_DeleteOnClose);
     sheet->setWindowModality(Qt::WindowModal);
-    sheet->setText(deleted ? QStringLiteral("File removed") : QStringLiteral("File changed"));
-    sheet->setInformativeText(
-        deleted ? QStringLiteral("This file was removed outside Write. Keep your text as an unsaved document?")
-        : locallyModified
-            ? QStringLiteral("This file changed outside Write. Reloading will discard your changes.")
-            : QStringLiteral("This file changed outside Write."));
     QPushButton *keep = sheet->addButton(QStringLiteral("Keep Mine"), QMessageBox::RejectRole);
     keep->setObjectName(QStringLiteral("keepButton"));
     QPushButton *reload = sheet->addButton(QStringLiteral("Reload"), QMessageBox::AcceptRole);
@@ -506,7 +504,7 @@ void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
     // Closing without a choice keeps the writer's text: it is the only copy
     // of what they wrote.
     sheet->setEscapeButton(keep);
-    sheet->setDefaultButton(deleted ? keep : reload);
+    describeExternalChange(sheet, deleted, locallyModified);
     connect(sheet, &QMessageBox::finished, this, [this, sheet, reload]() {
         if (sheet->clickedButton() == reload)
             m_backend->reloadFromDisk();
@@ -516,6 +514,24 @@ void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
     m_changeSheet = sheet;
     waitOn(sheet);
     sheet->open();
+}
+
+// There is nothing to reload from a removed file, so Reload goes while it is
+// gone, and Return keeps the text even if the file went while Reload had the
+// focus. Should the file come back, Reload returns.
+void MainWindow::describeExternalChange(QMessageBox *sheet, bool deleted, bool locallyModified) {
+    sheet->setText(deleted ? QStringLiteral("File removed") : QStringLiteral("File changed"));
+    sheet->setInformativeText(
+        deleted ? QStringLiteral("This file was removed outside Write. Keep your text as an unsaved document?")
+        : locallyModified
+            ? QStringLiteral("This file changed outside Write. Reloading will discard your changes.")
+            : QStringLiteral("This file changed outside Write."));
+    auto *keep = sheet->findChild<QPushButton *>(QStringLiteral("keepButton"));
+    auto *reload = sheet->findChild<QPushButton *>(QStringLiteral("reloadButton"));
+    reload->setVisible(!deleted);
+    sheet->setDefaultButton(deleted ? keep : reload);
+    if (deleted && sheet->isVisible())
+        keep->setFocus();
 }
 
 void MainWindow::tickFont() {
