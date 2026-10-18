@@ -12,12 +12,16 @@ DEFINES += SOURCE_ROOT=\\\"$$clean_path($$PWD/../..)\\\"
 SOURCES += \
     editorbench.cpp \
     ../../src/backend.cpp \
+    ../../src/findbar.cpp \
+    ../../src/mainwindow.cpp \
     ../../src/markdowneditor.cpp \
     ../../src/markdownedits.cpp \
     ../../src/markdownhighlighter.cpp \
     ../../src/plaintextlayout.cpp
 HEADERS += \
     ../../src/backend.h \
+    ../../src/findbar.h \
+    ../../src/mainwindow.h \
     ../../src/markdowneditor.h \
     ../../src/markdownedits.h \
     ../../src/markdownhighlighter.h \
