@@ -733,13 +733,6 @@ private slots:
         backend.attachDocument(&document);
         QTextCursor(&document).insertText(QStringLiteral("a **b** c"));
 
-        const QList<TextRange> ranges = backend.hiddenRangesAt(3);
-        QCOMPARE(ranges.size(), 2);
-        QCOMPARE(ranges.at(0).start, 2);
-        QCOMPARE(ranges.at(0).end, 4);
-        QCOMPARE(ranges.at(1).start, 5);
-        QCOMPARE(ranges.at(1).end, 7);
-
         const std::optional<EmphasisSpan> bold = backend.emphasisSpanAt(4, QStringLiteral("**"));
         QVERIFY(bold);
         QCOMPARE(bold->start, 2);
@@ -1466,15 +1459,16 @@ private slots:
         fixture.load(QStringLiteral("a😀b"), 3);
         QCOMPARE(move(-1), 1);
 
-        // Hidden Markdown markers are still skipped on both sides.
+        // Markers show at the caret, so it steps through them like any text.
         fixture.load(QStringLiteral("**bold**"), 0);
-        QCOMPARE(move(1), 2);
+        QCOMPARE(move(1), 1);
         fixture.load(QStringLiteral("**bold**"), 8);
-        QCOMPARE(move(-1), 6);
+        QCOMPARE(move(-1), 7);
 
-        // Hidden markers next to an emoji combine correctly.
+        // Markers next to an emoji still step over the whole emoji.
         fixture.load(QStringLiteral("*😀*x"), 0);
         QCOMPARE(move(1), 1);
+        QCOMPARE(move(1), 3);
         QCOMPARE(move(1), 4);
 
         // Paragraph separators still move one position at a time.
@@ -3531,7 +3525,7 @@ private slots:
         QVERIFY(!MarkdownHighlighter::closesFence(QStringLiteral("``` text"), 3));
     }
 
-    void keepsCaretRangesConsistentWithCode() {
+    void hidesNoMarkersInsideCode() {
         Backend backend;
         QScopedPointer<QObject> editor(makeEditor(backend));
         auto *document = qobject_cast<QTextEdit *>(editor.data())->document();
@@ -3545,11 +3539,17 @@ private slots:
                                                    "```\n"
                                                    "_unterminated_"));
         highlighter->rehighlight();
-        for (int blockNumber : {0, 1, 2, 4, 5, 6}) {
-            const auto block = document->findBlockByNumber(blockNumber);
-            QVERIFY(backend.hiddenRangesAt(block.position()).isEmpty());
-        }
-        QCOMPARE(backend.hiddenRangesAt(document->findBlockByNumber(3).position()).size(), 2);
+        const auto hiddenIn = [document](int blockNumber) {
+            int hidden = 0;
+            for (const auto &range : document->findBlockByNumber(blockNumber).layout()->formats()) {
+                if (range.format.fontPointSize() == 1.0)
+                    hidden += range.length;
+            }
+            return hidden;
+        };
+        for (int blockNumber : {0, 1, 2, 4, 5, 6})
+            QCOMPARE(hiddenIn(blockNumber), 0);
+        QCOMPARE(hiddenIn(3), 2);
 
         // Removing a fence rehighlights the following blocks as prose.
         QTextCursor cursor(document);
@@ -3557,7 +3557,73 @@ private slots:
         cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
         cursor.removeSelectedText();
         QTRY_COMPARE(document->findBlockByNumber(6).userState(), int(MarkdownHighlighter::Prose));
-        QCOMPARE(backend.hiddenRangesAt(document->findBlockByNumber(6).position()).size(), 2);
+        QCOMPARE(hiddenIn(6), 2);
+    }
+
+    // From Omawrite: the markers of whatever markup the caret is in or
+    // against show, in the marker colour, so they can be seen and edited.
+    void showsMarkersAroundTheCaret() {
+        const QString text = QStringLiteral("a **b** c");
+        // Away from the bold, its markers stay hidden.
+        for (int caret : {0, 1, 8, 9}) {
+            const auto formats = highlightedFormats(text, caret);
+            for (int i : {2, 3, 5, 6})
+                QCOMPARE(formats.at(i).fontPointSize(), 1.0);
+        }
+        // In it or against either end, they show, still in the marker colour.
+        for (int caret : {2, 3, 4, 5, 7}) {
+            const auto formats = highlightedFormats(text, caret);
+            for (int i : {2, 3, 5, 6}) {
+                QVERIFY(formats.at(i).fontPointSize() != 1.0);
+                QCOMPARE(formats.at(i).foreground().color(), QColor(QStringLiteral("#4f525a")));
+            }
+            QCOMPARE(formats.at(4).fontWeight(), int(QFont::Bold));
+        }
+
+        // Everything the caret sits in shows, and nothing beside it.
+        const QString nested = QStringLiteral("*a __b__ c* _d_");
+        const auto formats = highlightedFormats(nested, 5);
+        for (int i : {0, 3, 4, 6, 7, 10})
+            QVERIFY(formats.at(i).fontPointSize() != 1.0);
+        for (int i : {12, 14})
+            QCOMPARE(formats.at(i).fontPointSize(), 1.0);
+
+        // Moving to another line hides them again there.
+        QTextDocument document;
+        document.setPlainText(QStringLiteral("**a**\nb"));
+        MarkdownHighlighter highlighter(&document);
+        highlighter.setCaret(1);
+        QVERIFY(document.firstBlock().layout()->formats().constFirst().format.fontPointSize() != 1.0);
+        highlighter.setCaret(7);
+        QCOMPARE(document.firstBlock().layout()->formats().constFirst().format.fontPointSize(), 1.0);
+    }
+
+    // A link's destination shows while the caret is in the link, so it can be
+    // typed and changed there.
+    void editsALinkWhereTheCaretIs() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        const QString text = QStringLiteral("see [site](https://a.example) now");
+        const int destination = text.indexOf(QLatin1String("https"));
+        const auto hidden = [&fixture](int position) {
+            for (const auto &range : fixture.editor->document()->firstBlock().layout()->formats()) {
+                if (position >= range.start && position < range.start + range.length)
+                    return range.format.fontPointSize() == 1.0;
+            }
+            return false;
+        };
+        fixture.load(text, 0);
+        QVERIFY(hidden(destination));
+        fixture.load(text, 6);
+        QVERIFY(!hidden(destination));
+
+        // Typed out by hand, the link stays open to the caret as it closes.
+        fixture.load(QString(), 0);
+        QTest::keyClicks(fixture.editor, QStringLiteral("[a](b)"));
+        QVERIFY(!hidden(4));
+        QTest::keyClick(fixture.editor, Qt::Key_Left);
+        QTest::keyClick(fixture.editor, Qt::Key_C);
+        QCOMPARE(fixture.editor->toPlainText(), QStringLiteral("[a](bc)"));
     }
 
     void rendersBoldItalicRuns() {
@@ -4371,12 +4437,14 @@ private slots:
 
     // The character formats the highlighter gives a single line of text.
 private:
-    static QList<QTextCharFormat> highlightedFormats(const QString &text) {
+    static QList<QTextCharFormat> highlightedFormats(const QString &text, int caret = -1) {
         QTextDocument document;
         document.setPlainText(text);
         MarkdownHighlighter highlighter(&document);
         highlighter.setTheme(true, "#101010", "#eeeeee", "#5584aa", "#23372b");
         highlighter.rehighlight();
+        if (caret >= 0)
+            highlighter.setCaret(caret);
         QList<QTextCharFormat> formats(text.length());
         for (const auto &range : document.firstBlock().layout()->formats()) {
             for (int i = range.start; i < range.start + range.length; ++i)

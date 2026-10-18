@@ -56,6 +56,8 @@ MarkdownEditor::MarkdownEditor(Backend *backend, QWidget *parent)
     connect(m_backend, &Backend::darkModeChanged, this, &MarkdownEditor::applyTheme);
     connect(m_backend, &Backend::darkModeChanged, this, &MarkdownEditor::applySearchHighlights);
     connect(this, &QTextEdit::cursorPositionChanged, this, &MarkdownEditor::ensureCaretVisible);
+    connect(this, &QTextEdit::cursorPositionChanged, this,
+            [this]() { m_backend->setCaretPosition(textCursor().position()); });
     // Backend keeps the line height on what was typed, and tells an edit
     // from a pass of formatting.
     connect(this, &QTextEdit::textChanged, this, [this]() {
@@ -231,7 +233,7 @@ void MarkdownEditor::insertFromMimeData(const QMimeData *source) {
 }
 
 // Left and Right step over whole characters, as an emoji is several code
-// units, and over the Markdown markers the highlighter hides.
+// units. The markers at the caret show, so it steps through them as text.
 void MarkdownEditor::moveCaretVisibly(int direction) {
     QTextCursor cursor = textCursor();
     if (cursor.hasSelection()) {
@@ -240,27 +242,8 @@ void MarkdownEditor::moveCaretVisibly(int direction) {
         return;
     }
     const int last = document()->characterCount() - 1;
-    const int position = qBound(0, m_backend->cursorPositionStep(cursor.position(), direction), last);
-    cursor.setPosition(skipHidden(position, direction));
+    cursor.setPosition(qBound(0, m_backend->cursorPositionStep(cursor.position(), direction), last));
     setTextCursor(cursor);
-}
-
-int MarkdownEditor::skipHidden(int position, int direction) const {
-    const QList<TextRange> ranges = m_backend->hiddenRangesAt(position);
-    // One marker can end where the next begins, so look again after a jump.
-    for (bool moved = true; moved;) {
-        moved = false;
-        for (const TextRange &range : ranges) {
-            if (direction > 0 && position >= range.start && position < range.end) {
-                position = range.end;
-                moved = true;
-            } else if (direction < 0 && position > range.start && position <= range.end) {
-                position = range.start;
-                moved = true;
-            }
-        }
-    }
-    return position;
 }
 
 void MarkdownEditor::movePage(int direction, bool extendSelection) {

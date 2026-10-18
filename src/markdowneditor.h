@@ -61,7 +61,6 @@ private:
     void placeColumn();
     void moveCaretVisibly(int direction);
     void movePage(int direction, bool extendSelection);
-    int skipHidden(int position, int direction) const;
     void zoomByWheel(qreal notches);
     void forgetHoveredLink();
     void applySearchHighlights();

@@ -20,12 +20,6 @@ class QWindow;
 class QLockFile;
 class QMimeData;
 
-// A stretch of the document, in positions.
-struct TextRange {
-    int start = 0;
-    int end = 0;
-};
-
 // An emphasis span: its markers from start to end, the text between them,
 // and where the visible text ends before markers nested inside closing with it.
 struct EmphasisSpan {
@@ -114,7 +108,8 @@ public:
     static QString linkUrlFrom(const QMimeData *mimeData);
     QString clipboardText() const;
     bool editorTextChanged();
-    QList<TextRange> hiddenRangesAt(int position) const;
+    // Where the caret is, so the markup it sits in shows its markers.
+    void setCaretPosition(int position);
     QString linkUrlAt(int position) const;
     std::optional<EmphasisSpan> emphasisSpanAt(int position, const QString &marker) const;
     int cursorPositionStep(int position, int direction) const;
@@ -195,6 +190,7 @@ private:
     QPointer<QTextDocument> m_document;
     QPointer<QWindow> m_parentWindow;
     QPointer<MarkdownHighlighter> m_highlighter;
+    int m_caretPosition = 0;
     // What the document looked like when its text was last taken in. Edits
     // change its length or its undo history; highlighting and line-height
     // passes change neither, so an edit is told apart without copying the text.
