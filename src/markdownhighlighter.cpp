@@ -1,5 +1,6 @@
 #include "markdownhighlighter.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
@@ -29,14 +30,14 @@ void MarkdownHighlighter::setTheme(bool darkMode, const QString &background,
     m_customAccent = accent;
     m_customCodeBackground = codeBackground;
     rebuildFormats();
-    rehighlight();
+    rehighlightAll();
 }
 
 // The hidden marker spacing is measured from the document's default font, so
 // it has to be remeasured whenever the editor switches typeface.
 void MarkdownHighlighter::refreshFont() {
     rebuildFormats();
-    rehighlight();
+    rehighlightAll();
 }
 
 void MarkdownHighlighter::setCaret(int position) {
@@ -54,6 +55,30 @@ void MarkdownHighlighter::setCaret(int position) {
     if (left.isValid() && left != entered)
         rehighlightBlock(left);
     rehighlightBlock(entered);
+}
+
+// QSyntaxHighlighter::rehighlight() marks the blocks dirty one at a time, and
+// a laid-out document redoes layout work after each one: Qt's own layout for
+// the rest of itself, so a full restyle grows with the square of its length,
+// and Write's for the block, with the bookkeeping around it. A null page size
+// makes the layout skip that work, so restyle under one and lay the document
+// out once when the real size comes back.
+//
+// That layout has to finish here. Restoring the size only starts a lazy one
+// in Qt's layout, which whatever draws the document first would otherwise
+// finish in the middle of drawing.
+void MarkdownHighlighter::rehighlightAll() {
+    QTextDocument *doc = document();
+    if (!doc) {
+        rehighlight();
+        return;
+    }
+    const QSizeF pageSize = doc->pageSize();
+    doc->setPageSize(QSizeF(0, 0));
+    rehighlight();
+    doc->setPageSize(pageSize);
+    if (QAbstractTextDocumentLayout *layout = doc->documentLayout())
+        layout->documentSize();
 }
 
 void MarkdownHighlighter::rebuildFormats() {

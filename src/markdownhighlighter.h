@@ -62,6 +62,7 @@ protected:
 
 private:
     void rebuildFormats();
+    void rehighlightAll();
     void highlightMarkers(const QString &text);
     void highlightInline(const QString &text);
 

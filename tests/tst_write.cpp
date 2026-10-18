@@ -472,6 +472,33 @@ private slots:
         QCOMPARE(document->documentLayout()->documentSize().height(), height);
     }
 
+    // A restyle under a null page size only starts a lazy layout when the
+    // size comes back, and anything that draws the blocks it left without one
+    // would lay them out in the middle of drawing.
+    void restylesTheWholeDocumentWithItsLayoutFinished() {
+        QTextDocument document;
+        document.setTextWidth(600);
+        QStringList lines;
+        for (int i = 0; i < 3000; ++i)
+            lines << QStringLiteral("line %1 with **bold** and a [link](u)").arg(i);
+        document.setPlainText(lines.join(QLatin1Char('\n')));
+        MarkdownHighlighter highlighter(&document);
+        document.documentLayout()->documentSize();
+
+        const auto unlaidBlocks = [&document] {
+            int count = 0;
+            for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
+                if (block.layout()->lineCount() == 0)
+                    ++count;
+            }
+            return count;
+        };
+        highlighter.setTheme(false, QString(), QString(), QString(), QString());
+        QCOMPARE(unlaidBlocks(), 0);
+        highlighter.refreshFont();
+        QCOMPARE(unlaidBlocks(), 0);
+    }
+
     // The layout Write installs puts every line exactly where Qt's own would,
     // and finds the same character under every point.
     void plainTextLayoutMatchesQtsLayout() {
