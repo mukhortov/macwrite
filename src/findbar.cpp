@@ -1,6 +1,19 @@
 #include "findbar.h"
 
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QTextCursor>
+#include <QToolButton>
+#include <QVBoxLayout>
+
 #include <algorithm>
+
+#include "backend.h"
+#include "markdowneditor.h"
+#include "markdownedits.h"
 
 void SearchMatches::update(const QList<int> &starts, int queryLength, bool selectFirst) {
     const int previous = qMax(0, currentStart());
@@ -44,4 +57,183 @@ QString SearchMatches::countText() const {
     if (m_queryLength == 0)
         return {};
     return QStringLiteral("%1 of %2").arg(m_current + 1).arg(m_starts.size());
+}
+
+FindBar::FindBar(MarkdownEditor *editor, Backend *backend, QWidget *parent)
+    : QWidget(parent), m_editor(editor), m_backend(backend) {
+    setObjectName(QStringLiteral("findBar"));
+
+    m_searchField = new QLineEdit(this);
+    m_searchField->setObjectName(QStringLiteral("searchField"));
+    m_searchField->setPlaceholderText(QStringLiteral("Find"));
+    m_searchField->setClearButtonEnabled(true);
+    m_count = new QLabel(this);
+    m_count->setObjectName(QStringLiteral("matchCount"));
+    auto *previous = new QToolButton(this);
+    previous->setObjectName(QStringLiteral("previousMatchButton"));
+    previous->setArrowType(Qt::LeftArrow);
+    previous->setToolTip(QStringLiteral("Previous"));
+    auto *next = new QToolButton(this);
+    next->setObjectName(QStringLiteral("nextMatchButton"));
+    next->setArrowType(Qt::RightArrow);
+    next->setToolTip(QStringLiteral("Next"));
+    auto *done = new QPushButton(QStringLiteral("Done"), this);
+    done->setObjectName(QStringLiteral("doneButton"));
+
+    m_replaceRow = new QWidget(this);
+    m_replaceField = new QLineEdit(m_replaceRow);
+    m_replaceField->setObjectName(QStringLiteral("replaceField"));
+    m_replaceField->setPlaceholderText(QStringLiteral("Replace with"));
+    auto *replace = new QPushButton(QStringLiteral("Replace"), m_replaceRow);
+    replace->setObjectName(QStringLiteral("replaceButton"));
+    auto *replaceAll = new QPushButton(QStringLiteral("All"), m_replaceRow);
+    replaceAll->setObjectName(QStringLiteral("replaceAllButton"));
+    // Return in a field belongs to the bar, not to a default button.
+    for (QPushButton *button : {done, replace, replaceAll})
+        button->setAutoDefault(false);
+
+    auto *findRow = new QHBoxLayout;
+    findRow->addWidget(m_searchField, 1);
+    findRow->addWidget(m_count);
+    findRow->addWidget(previous);
+    findRow->addWidget(next);
+    findRow->addWidget(done);
+    auto *replaceRowLayout = new QHBoxLayout(m_replaceRow);
+    replaceRowLayout->setContentsMargins(0, 0, 0, 0);
+    replaceRowLayout->addWidget(m_replaceField, 1);
+    replaceRowLayout->addWidget(replace);
+    replaceRowLayout->addWidget(replaceAll);
+    auto *rows = new QVBoxLayout(this);
+    rows->addLayout(findRow);
+    rows->addWidget(m_replaceRow);
+    setTabOrder(m_searchField, m_replaceField);
+
+    m_searchField->installEventFilter(this);
+    m_replaceField->installEventFilter(this);
+    connect(m_searchField, &QLineEdit::textChanged, this, [this]() { search(true); });
+    connect(previous, &QToolButton::clicked, this, [this]() { step(-1); });
+    connect(next, &QToolButton::clicked, this, [this]() { step(1); });
+    connect(done, &QPushButton::clicked, this, &FindBar::dismiss);
+    connect(replace, &QPushButton::clicked, this, &FindBar::replaceCurrent);
+    connect(replaceAll, &QPushButton::clicked, this, &FindBar::replaceAll);
+    connect(m_editor, &MarkdownEditor::edited, this, &FindBar::documentChanged);
+    connect(m_editor, &MarkdownEditor::viewChanged, this, &FindBar::updateHighlights);
+
+    m_replaceRow->hide();
+    hide();
+}
+
+void FindBar::open(bool withReplace) {
+    show();
+    if (withReplace)
+        m_replaceRow->show();
+    // The text may have changed while the bar was away.
+    search(false);
+    m_searchField->setFocus();
+    m_searchField->selectAll();
+}
+
+void FindBar::dismiss() {
+    hide();
+    m_replaceRow->hide();
+    m_editor->setSearchHighlights({});
+    QTextCursor cursor = m_editor->textCursor();
+    cursor.clearSelection();
+    m_editor->setTextCursor(cursor);
+    m_editor->setFocus();
+}
+
+void FindBar::step(int direction) {
+    if (m_matches.count() == 0)
+        return;
+    m_matches.step(direction);
+    showCurrent(true);
+}
+
+void FindBar::search(bool selectMatch) {
+    const QString query = m_searchField->text();
+    m_matches.update(query.isEmpty() ? QList<int>() : m_backend->searchMatches(query),
+                     int(query.size()), selectMatch);
+    showCurrent(selectMatch);
+}
+
+void FindBar::showCurrent(bool selectMatch) {
+    const int start = m_matches.currentStart();
+    if (selectMatch && start >= 0) {
+        QTextCursor cursor = m_editor->textCursor();
+        cursor.setPosition(start);
+        cursor.setPosition(start + m_matches.queryLength(), QTextCursor::KeepAnchor);
+        m_editor->setTextCursor(cursor);
+    }
+    m_count->setText(m_matches.countText());
+    updateHighlights();
+}
+
+// Only the matches in view are drawn: a short query in a long document can
+// match hundreds of thousands of times.
+void FindBar::updateHighlights() {
+    if (!isOpen() || m_matches.count() == 0) {
+        m_editor->setSearchHighlights({});
+        return;
+    }
+    const auto [first, last] = m_editor->visiblePositions();
+    m_editor->setSearchHighlights(m_matches.inRange(first, last));
+}
+
+void FindBar::documentChanged() {
+    if (isOpen())
+        search(false);
+}
+
+// Carries on past what was just written, so a replacement the query also
+// matches is not found again.
+void FindBar::replaceCurrent() {
+    const int start = m_matches.currentStart();
+    if (start < 0)
+        return;
+    const QString replacement = m_replaceField->text();
+    QTextCursor cursor = m_editor->textCursor();
+    MarkdownEdits::replaceRange(cursor, start, start + m_matches.queryLength(), replacement);
+    m_editor->setTextCursor(cursor);
+    m_matches.update(m_backend->searchMatches(m_searchField->text()), m_matches.queryLength(), false);
+    m_matches.setCurrentAtOrAfter(start + int(replacement.size()));
+    showCurrent(true);
+}
+
+// One replacement over the span of every match, so a single undo takes them
+// all back.
+void FindBar::replaceAll() {
+    if (m_matches.count() == 0)
+        return;
+    const QString text = m_editor->toPlainText();
+    const QString replacement = m_replaceField->text();
+    const int length = m_matches.queryLength();
+    const QList<SearchHighlight> all = m_matches.inRange(0, int(text.size()), m_matches.count());
+    QString replaced;
+    int position = all.first().start;
+    for (const SearchHighlight &match : all) {
+        replaced += QStringView(text).mid(position, match.start - position) + replacement;
+        position = match.start + length;
+    }
+    QTextCursor cursor = m_editor->textCursor();
+    MarkdownEdits::replaceRange(cursor, all.first().start, position, replaced);
+    m_editor->setTextCursor(cursor);
+}
+
+bool FindBar::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() != QEvent::KeyPress)
+        return QWidget::eventFilter(watched, event);
+    const auto *key = static_cast<QKeyEvent *>(event);
+    if (key->key() == Qt::Key_Escape) {
+        dismiss();
+        return true;
+    }
+    if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+        if (watched == m_replaceField)
+            replaceCurrent();
+        else
+            step(key->modifiers() & Qt::ShiftModifier ? -1 : 1);
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
 }

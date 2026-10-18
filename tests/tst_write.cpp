@@ -22,6 +22,8 @@
 #include <QPainter>
 #include <QRandomGenerator>
 #include <QLineEdit>
+#include <QLabel>
+#include <QPushButton>
 #include <QVBoxLayout>
 #include <QScrollBar>
 #include <QInputMethodEvent>
@@ -291,6 +293,41 @@ static bool holdsColour(const QImage &image, const QColor &colour) {
     }
     return false;
 }
+
+// A MarkdownEditor with the find bar above it, on a Backend of their own.
+struct FindFixture {
+    Backend backend;
+    QWidget window;
+    MarkdownEditor *editor = nullptr;
+    FindBar *findBar = nullptr;
+
+    FindFixture() {
+        editor = new MarkdownEditor(&backend, &window);
+        findBar = new FindBar(editor, &backend, &window);
+        auto *column = new QVBoxLayout(&window);
+        column->setContentsMargins(0, 0, 0, 0);
+        column->addWidget(findBar);
+        column->addWidget(editor, 1);
+        window.resize(1000, 700);
+    }
+    bool show() {
+        window.show();
+        window.activateWindow();
+        return QTest::qWaitForWindowActive(&window);
+    }
+    void load(const QString &text) { editor->setPlainText(text); }
+    QString text() const { return editor->toPlainText(); }
+    // How a match starting there is highlighted: "current", "other", or not at all.
+    QString drawnAs(int start) const {
+        const QColor current(backend.darkMode() ? QStringLiteral("#b36b20") : QStringLiteral("#ffad42"));
+        for (const QTextEdit::ExtraSelection &selection : editor->extraSelections()) {
+            if (selection.cursor.selectionStart() == start)
+                return selection.format.background().color() == current ? QStringLiteral("current")
+                                                                        : QStringLiteral("other");
+        }
+        return {};
+    }
+};
 
 class WriteTest : public QObject {
     Q_OBJECT
@@ -1789,6 +1826,151 @@ private slots:
         QVERIFY(fixture.editor->extraSelections().isEmpty());
     }
 
+    void searchFollowsEditsWithoutTakingTheCaret() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        MarkdownEditor *editor = fixture.editor;
+        FindBar *findBar = fixture.findBar;
+        fixture.load(QStringLiteral("foo bar foo"));
+        findBar->open(false);
+        findBar->searchField()->setText(QStringLiteral("foo"));
+        QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("foo"));
+
+        // Back in the text, typing goes where the caret is.
+        editor->setFocus();
+        QTextCursor cursor = editor->textCursor();
+        cursor.setPosition(7);
+        editor->setTextCursor(cursor);
+        QTest::keyClicks(editor, QStringLiteral("xy"));
+        QCOMPARE(fixture.text(), QStringLiteral("foo barxy foo"));
+        QCOMPARE(findBar->matches().count(), 2);
+
+        // The current match is drawn apart from the others, and the mark
+        // follows it when text above it is deleted.
+        fixture.load(QStringLiteral("long text\nfoo\nfoo"));
+        findBar->searchField()->setText(QStringLiteral("x"));
+        findBar->searchField()->setText(QStringLiteral("foo"));
+        findBar->step(1);
+        QCOMPARE(fixture.drawnAs(14), QStringLiteral("current"));
+        QCOMPARE(fixture.drawnAs(10), QStringLiteral("other"));
+        QTextCursor edit(editor->document());
+        edit.setPosition(0);
+        edit.setPosition(10, QTextCursor::KeepAnchor);
+        edit.removeSelectedText();
+        QCOMPARE(findBar->matches().count(), 2);
+        QCOMPARE(findBar->matches().currentIndex(), 0);
+        QCOMPARE(fixture.drawnAs(0), QStringLiteral("current"));
+        QCOMPARE(fixture.drawnAs(4), QStringLiteral("other"));
+
+        // Nor does it stay behind when another match moves into its offset.
+        fixture.load(QStringLiteral("foo\nab\nfoo"));
+        findBar->step(1);
+        QCOMPARE(fixture.drawnAs(7), QStringLiteral("current"));
+        edit.setPosition(0);
+        edit.insertText(QStringLiteral("abcdefg"));
+        QCOMPARE(findBar->matches().currentStart(), 7);
+        QCOMPARE(fixture.drawnAs(7), QStringLiteral("current"));
+        QCOMPARE(fixture.drawnAs(14), QStringLiteral("other"));
+
+        // Matches are found at the document's own offsets, even past a
+        // character whose lowercase is longer.
+        fixture.load(QString::fromUtf8("\xC4\xB0 ab"));
+        findBar->searchField()->setText(QStringLiteral("ab"));
+        QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("ab"));
+    }
+
+    void replacesOneMatchAfterAnother() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        FindBar *findBar = fixture.findBar;
+        auto *replaceButton = findBar->findChild<QPushButton *>(QStringLiteral("replaceButton"));
+        auto *replaceAllButton = findBar->findChild<QPushButton *>(QStringLiteral("replaceAllButton"));
+        QVERIFY(replaceButton && replaceAllButton);
+
+        fixture.load(QStringLiteral("foo foo foo"));
+        findBar->open(true);
+        QVERIFY(replaceButton->isVisible());
+        findBar->searchField()->setText(QStringLiteral("foo"));
+        findBar->replaceField()->setText(QStringLiteral("Foo"));
+
+        // A replacement the query still matches is not found again.
+        replaceButton->click();
+        QCOMPARE(fixture.text(), QStringLiteral("Foo foo foo"));
+        replaceButton->click();
+        QCOMPARE(fixture.text(), QStringLiteral("Foo Foo foo"));
+        replaceButton->click();
+        QCOMPARE(fixture.text(), QStringLiteral("Foo Foo Foo"));
+
+        // Replace All is one edit, so one undo takes it back.
+        fixture.load(QStringLiteral("a foo b foo c"));
+        findBar->replaceField()->setText(QStringLiteral("x"));
+        replaceAllButton->click();
+        QCOMPARE(fixture.text(), QStringLiteral("a x b x c"));
+        fixture.editor->undo();
+        QCOMPARE(fixture.text(), QStringLiteral("a foo b foo c"));
+    }
+
+    void replacesEveryMatchInOneUndo() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("x x x"));
+        fixture.findBar->open(true);
+        fixture.findBar->searchField()->setText(QStringLiteral("x"));
+        fixture.findBar->replaceField()->setText(QStringLiteral("yy"));
+        fixture.findBar->findChild<QPushButton *>(QStringLiteral("replaceAllButton"))->click();
+        QCOMPARE(fixture.text(), QStringLiteral("yy yy yy"));
+        fixture.editor->undo();
+        QCOMPARE(fixture.text(), QStringLiteral("x x x"));
+    }
+
+    void stepsThroughMatchesFromTheKeyboard() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        FindBar *findBar = fixture.findBar;
+        auto *count = findBar->findChild<QLabel *>(QStringLiteral("matchCount"));
+        QVERIFY(count);
+        fixture.load(QStringLiteral("foo foo foo"));
+        findBar->open(true);
+        QTest::keyClicks(findBar->searchField(), QStringLiteral("foo"));
+        QCOMPARE(count->text(), QStringLiteral("1 of 3"));
+        QTest::keyClick(findBar->searchField(), Qt::Key_Return);
+        QCOMPARE(count->text(), QStringLiteral("2 of 3"));
+        QCOMPARE(fixture.editor->textCursor().selectionStart(), 4);
+        QTest::keyClick(findBar->searchField(), Qt::Key_Return, Qt::ShiftModifier);
+        QCOMPARE(count->text(), QStringLiteral("1 of 3"));
+
+        // Return in the replace field replaces the current match.
+        findBar->replaceField()->setText(QStringLiteral("bar"));
+        QTest::keyClick(findBar->replaceField(), Qt::Key_Return);
+        QCOMPARE(fixture.text(), QStringLiteral("bar foo foo"));
+        QCOMPARE(count->text(), QStringLiteral("1 of 2"));
+    }
+
+    void reachesAndLeavesTheReplaceFieldFromTheKeyboard() {
+        FindFixture fixture;
+        QVERIFY(fixture.show());
+        FindBar *findBar = fixture.findBar;
+
+        findBar->open(true);
+        QTRY_VERIFY(findBar->searchField()->hasFocus());
+        QTest::keyClick(findBar->searchField(), Qt::Key_Tab);
+        QTRY_VERIFY(findBar->replaceField()->hasFocus());
+        QTest::keyClick(findBar->replaceField(), Qt::Key_Escape);
+        QVERIFY(!findBar->isOpen());
+        QTRY_VERIFY(fixture.editor->hasFocus());
+
+        // Escape closes the bar from the search field too.
+        findBar->open(false);
+        QTest::keyClick(findBar->searchField(), Qt::Key_Escape);
+        QVERIFY(!findBar->isOpen());
+
+        // A link inserted from the find bar puts the writer back in the text.
+        findBar->open(false);
+        QTRY_VERIFY(findBar->searchField()->hasFocus());
+        fixture.editor->insertLink();
+        QTRY_VERIFY(fixture.editor->hasFocus());
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());
@@ -1941,159 +2123,6 @@ private slots:
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("`~~x~~`")).isEmpty());
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("a ~~ b ~~ c")).isEmpty());
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("~~~x~~~")).isEmpty());
-    }
-
-    void searchFollowsEditsWithoutTakingTheCaret() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *searchField = window->findChild<QObject *>(QStringLiteral("searchField"));
-        QVERIFY(editor);
-        QVERIFY(searchField);
-
-        editor->setProperty("text", QStringLiteral("foo bar foo"));
-        QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
-        searchField->setProperty("text", QStringLiteral("foo"));
-        QCOMPARE(editor->property("selectedText").toString(), QStringLiteral("foo"));
-
-        // Back in the text, typing goes where the caret is.
-        QMetaObject::invokeMethod(editor, "forceActiveFocus");
-        editor->setProperty("cursorPosition", 7);
-        QTest::keyClick(window, 'x');
-        QTest::keyClick(window, 'y');
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("foo barxy foo"));
-        QCOMPARE(window->property("searchMatches").toList().size(), 2);
-
-        // The current match is drawn apart from the others, and the mark
-        // follows it when text above it is deleted.
-        const auto drawnAs = [window](int start) {
-            QVariant matches = window->property("visibleSearchMatches");
-            if (matches.metaType() == QMetaType::fromType<QJSValue>())
-                matches = matches.value<QJSValue>().toVariant();
-            for (const QVariant &match : matches.toList()) {
-                const QVariantMap drawn = match.toMap();
-                if (drawn.value(QStringLiteral("start")).toInt() == start)
-                    return drawn.value(QStringLiteral("current")).toBool()
-                        ? QStringLiteral("current") : QStringLiteral("other");
-            }
-            return QString();
-        };
-        editor->setProperty("text", QStringLiteral("long text\nfoo\nfoo"));
-        searchField->setProperty("text", QStringLiteral("x"));
-        searchField->setProperty("text", QStringLiteral("foo"));
-        QMetaObject::invokeMethod(window, "moveSearch", Q_ARG(QVariant, 1));
-        QCOMPARE(drawnAs(14), QStringLiteral("current"));
-        QCOMPARE(drawnAs(10), QStringLiteral("other"));
-        QMetaObject::invokeMethod(editor, "remove", Q_ARG(int, 0), Q_ARG(int, 10));
-        QCOMPARE(window->property("searchMatches").toList().size(), 2);
-        QCOMPARE(window->property("searchMatchIndex").toInt(), 0);
-        QCOMPARE(drawnAs(0), QStringLiteral("current"));
-        QCOMPARE(drawnAs(4), QStringLiteral("other"));
-
-        // Nor does it stay behind when another match moves into its offset.
-        editor->setProperty("text", QStringLiteral("foo\nab\nfoo"));
-        QMetaObject::invokeMethod(window, "moveSearch", Q_ARG(QVariant, 1));
-        QCOMPARE(drawnAs(7), QStringLiteral("current"));
-        QMetaObject::invokeMethod(editor, "insert", Q_ARG(int, 0), Q_ARG(QString, QStringLiteral("abcdefg")));
-        QCOMPARE(window->property("searchMatches").toList().first().toInt(), 7);
-        QCOMPARE(drawnAs(7), QStringLiteral("current"));
-        QCOMPARE(drawnAs(14), QStringLiteral("other"));
-
-        // Matches are found at the document's own offsets, even past a
-        // character whose lowercase is longer.
-        editor->setProperty("text", QString::fromUtf8("\xC4\xB0 ab"));
-        searchField->setProperty("text", QStringLiteral("ab"));
-        QCOMPARE(editor->property("selectedText").toString(), QStringLiteral("ab"));
-    }
-
-    void replacesOneMatchAfterAnother() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *searchField = window->findChild<QObject *>(QStringLiteral("searchField"));
-        QObject *replaceField = window->findChild<QObject *>(QStringLiteral("replaceField"));
-        QObject *replaceButton = window->findChild<QObject *>(QStringLiteral("replaceButton"));
-        QObject *replaceAllButton = window->findChild<QObject *>(QStringLiteral("replaceAllButton"));
-        QVERIFY(editor && searchField && replaceField && replaceButton && replaceAllButton);
-
-        editor->setProperty("text", QStringLiteral("foo foo foo"));
-        pressFindAndReplace(window);
-        searchField->setProperty("text", QStringLiteral("foo"));
-        replaceField->setProperty("text", QStringLiteral("Foo"));
-
-        // A replacement the query still matches is not found again.
-        QMetaObject::invokeMethod(replaceButton, "clicked");
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("Foo foo foo"));
-        QMetaObject::invokeMethod(replaceButton, "clicked");
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("Foo Foo foo"));
-        QMetaObject::invokeMethod(replaceButton, "clicked");
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("Foo Foo Foo"));
-
-        // Replace All is one edit, so one undo takes it back.
-        editor->setProperty("text", QStringLiteral("a foo b foo c"));
-        replaceField->setProperty("text", QStringLiteral("x"));
-        QMetaObject::invokeMethod(replaceAllButton, "clicked");
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("a x b x c"));
-        QMetaObject::invokeMethod(editor, "undo");
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("a foo b foo c"));
-    }
-
-    void reachesAndLeavesTheReplaceFieldFromTheKeyboard() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *replaceField = window->findChild<QObject *>(QStringLiteral("replaceField"));
-        QVERIFY(editor && replaceField);
-
-        pressFindAndReplace(window);
-        QTest::keyClick(window, Qt::Key_Tab);
-        QTRY_VERIFY(replaceField->property("activeFocus").toBool());
-        QTest::keyClick(window, Qt::Key_Escape);
-        QVERIFY(!window->property("searchOpen").toBool());
-
-        // Escape closes the bar from the Replace field itself too.
-        pressFindAndReplace(window);
-        QMetaObject::invokeMethod(replaceField, "forceActiveFocus");
-        QTest::keyClick(window, Qt::Key_Escape);
-        QVERIFY(!window->property("searchOpen").toBool());
-
-        // A link inserted from the find bar puts the writer back in the text.
-        QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
-        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
-        QVERIFY(editor->property("activeFocus").toBool());
     }
 
     void keepsShortcutsBehindDialogs() {
