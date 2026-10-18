@@ -24,6 +24,7 @@
 
 #include <functional>
 #include "cli.h"
+#include "findbar.h"
 
 #include "appeventfilter.h"
 #include "backend.h"
@@ -1002,6 +1003,59 @@ private slots:
         QVERIFY(undoes(QStringLiteral("abc"), 1, -1, [](QTextCursor &cursor) {
             MarkdownEdits::replaceRange(cursor, 0, 3, QStringLiteral("x\r\ny"), std::pair{0, 1});
         }));
+    }
+
+    void searchMatchesStepAndFollow() {
+        SearchMatches matches;
+        matches.update({2, 10, 30}, 3, true);
+        QCOMPARE(matches.currentIndex(), 0);
+        QCOMPARE(matches.countText(), QStringLiteral("1 of 3"));
+        matches.step(-1);
+        QCOMPARE(matches.currentIndex(), 2);
+        matches.step(1);
+        QCOMPARE(matches.currentIndex(), 0);
+
+        // An edit moves the matches; the current one is still the one at or
+        // after where it was, and the caret is no business of theirs.
+        matches.step(1);
+        QCOMPARE(matches.currentStart(), 10);
+        matches.update({4, 12, 32}, 3, false);
+        QCOMPARE(matches.currentStart(), 12);
+
+        matches.setCurrentAtOrAfter(31);
+        QCOMPARE(matches.currentStart(), 32);
+        matches.setCurrentAtOrAfter(40);
+        QCOMPARE(matches.currentStart(), 4);
+
+        matches.update({}, 3, true);
+        QCOMPARE(matches.countText(), QStringLiteral("0 of 0"));
+        QCOMPARE(matches.currentStart(), -1);
+        matches.update({}, 0, true);
+        QCOMPARE(matches.countText(), QString());
+    }
+
+    // A one-letter query can match hundreds of thousands of times in a long
+    // document; only the matches in view are drawn, and finding them is a search.
+    void findsMatchesInViewAmongManyQuickly() {
+        QList<int> starts;
+        for (int match = 0; match < 350000; ++match)
+            starts.append(match * 15);
+        SearchMatches matches;
+        matches.update(starts, 1, true);
+
+        QElapsedTimer timer;
+        timer.start();
+        const QList<SearchHighlight> inView = matches.inRange(1'000'000, 1'003'000);
+        const QList<SearchHighlight> everything = matches.inRange(0, 6'000'000);
+        QVERIFY2(timer.elapsed() < 5, qPrintable(QString::number(timer.elapsed())));
+
+        QCOMPARE(inView.size(), 200);
+        QCOMPARE(inView.first().start, 1'000'005);
+        QCOMPARE(inView.first().end, 1'000'006);
+        QVERIFY(std::none_of(inView.cbegin(), inView.cend(),
+                             [](const SearchHighlight &match) { return match.current; }));
+        QCOMPARE(everything.size(), 2000);
+        QVERIFY(everything.first().current);
     }
 
     void findsLinesWithoutCopyingTheText() {
