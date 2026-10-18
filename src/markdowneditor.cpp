@@ -2,11 +2,14 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QFontMetricsF>
+#include <QKeyEvent>
+#include <QMimeData>
 #include <QPainter>
 #include <QScrollBar>
 #include <QTextBlock>
 
 #include "backend.h"
+#include "markdownedits.h"
 #include "plaintextlayout.h"
 
 namespace {
@@ -42,6 +45,12 @@ MarkdownEditor::MarkdownEditor(Backend *backend, QWidget *parent)
     connect(m_backend, &Backend::themeColorsChanged, this, &MarkdownEditor::applyTheme);
     connect(m_backend, &Backend::darkModeChanged, this, &MarkdownEditor::applyTheme);
     connect(this, &QTextEdit::cursorPositionChanged, this, &MarkdownEditor::ensureCaretVisible);
+    // Backend keeps the line height on what was typed, and tells an edit
+    // from a pass of formatting.
+    connect(this, &QTextEdit::textChanged, this, [this]() {
+        if (m_backend->editorTextChanged())
+            emit edited();
+    });
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &MarkdownEditor::viewChanged);
     connect(m_layout, &QAbstractTextDocumentLayout::documentSizeChanged, this,
             &MarkdownEditor::viewChanged);
@@ -145,4 +154,108 @@ void MarkdownEditor::focusInEvent(QFocusEvent *event) {
 void MarkdownEditor::focusOutEvent(QFocusEvent *event) {
     QTextEdit::focusOutEvent(event);
     viewport()->update();
+}
+
+void MarkdownEditor::toggleWrap(const QString &marker) {
+    setFocus();
+    QTextCursor cursor = textCursor();
+    MarkdownEdits::toggleWrap(cursor, marker, m_backend->emphasisSpanAt(cursor.position(), marker));
+    setTextCursor(cursor);
+}
+
+void MarkdownEditor::insertLink() {
+    setFocus();
+    QTextCursor cursor = textCursor();
+    MarkdownEdits::insertLink(cursor, m_backend->clipboardUrl());
+    setTextCursor(cursor);
+}
+
+void MarkdownEditor::keyPressEvent(QKeyEvent *event) {
+    const Qt::KeyboardModifiers modifiers = event->modifiers();
+    const bool command = modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+    const bool shift = modifiers & Qt::ShiftModifier;
+    QTextCursor cursor = textCursor();
+    switch (event->key()) {
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        if (command)
+            break;
+        MarkdownEdits::smartReturn(cursor, shift, m_backend->insideFence(cursor.position()));
+        setTextCursor(cursor);
+        return;
+    case Qt::Key_Backspace:
+        if (command || !MarkdownEdits::deleteParagraphBreakBehind(cursor))
+            break;
+        setTextCursor(cursor);
+        return;
+    case Qt::Key_Left:
+    case Qt::Key_Right:
+        if (command || shift)
+            break;
+        moveCaretVisibly(event->key() == Qt::Key_Right ? 1 : -1);
+        return;
+    case Qt::Key_PageUp:
+    case Qt::Key_PageDown:
+        if (command)
+            break;
+        movePage(event->key() == Qt::Key_PageDown ? 1 : -1, shift);
+        return;
+    default:
+        break;
+    }
+    QTextEdit::keyPressEvent(event);
+}
+
+// A URL pasted or dropped over selected text links that text; anything else
+// goes in as plain text.
+void MarkdownEditor::insertFromMimeData(const QMimeData *source) {
+    QTextCursor cursor = textCursor();
+    if (!MarkdownEdits::pasteUrlAsLink(cursor, Backend::linkUrlFrom(source)))
+        MarkdownEdits::pastePlainText(cursor, source->text());
+    setTextCursor(cursor);
+}
+
+// Left and Right step over whole characters, as an emoji is several code
+// units, and over the Markdown markers the highlighter hides.
+void MarkdownEditor::moveCaretVisibly(int direction) {
+    QTextCursor cursor = textCursor();
+    if (cursor.hasSelection()) {
+        cursor.setPosition(direction > 0 ? cursor.selectionEnd() : cursor.selectionStart());
+        setTextCursor(cursor);
+        return;
+    }
+    const int last = document()->characterCount() - 1;
+    const int position = qBound(0, m_backend->cursorPositionStep(cursor.position(), direction), last);
+    cursor.setPosition(skipHidden(position, direction));
+    setTextCursor(cursor);
+}
+
+int MarkdownEditor::skipHidden(int position, int direction) const {
+    const QList<TextRange> ranges = m_backend->hiddenRangesAt(position);
+    // One marker can end where the next begins, so look again after a jump.
+    for (bool moved = true; moved;) {
+        moved = false;
+        for (const TextRange &range : ranges) {
+            if (direction > 0 && position >= range.start && position < range.end) {
+                position = range.end;
+                moved = true;
+            } else if (direction < 0 && position > range.start && position <= range.end) {
+                position = range.start;
+                moved = true;
+            }
+        }
+    }
+    return position;
+}
+
+void MarkdownEditor::movePage(int direction, bool extendSelection) {
+    const int lineSize = fontPixelSize();
+    const int step = qMax(lineSize, viewport()->height() - 2 * lineSize);
+    const QRect caret = cursorRect();
+    const int scrolled = verticalScrollBar()->value();
+    const int target = qMax(0, scrolled + caret.y() + caret.height() / 2 + direction * step);
+    const int position = cursorForPosition(QPoint(caret.x(), target - scrolled)).position();
+    QTextCursor cursor = textCursor();
+    cursor.setPosition(position, extendSelection ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
+    setTextCursor(cursor);
 }

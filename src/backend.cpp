@@ -538,10 +538,10 @@ void Backend::copyAsHtml() {
 
 QString Backend::clipboardUrl() const {
     const QClipboard *clipboard = QGuiApplication::clipboard();
-    if (!clipboard)
-        return {};
+    return clipboard ? linkUrlFrom(clipboard->mimeData()) : QString();
+}
 
-    const QMimeData *mimeData = clipboard->mimeData();
+QString Backend::linkUrlFrom(const QMimeData *mimeData) {
     if (!mimeData)
         return {};
 

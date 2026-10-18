@@ -18,6 +18,7 @@ class QFont;
 class QTextDocument;
 class QWindow;
 class QLockFile;
+class QMimeData;
 
 // A stretch of the document, in positions.
 struct TextRange {
@@ -124,6 +125,8 @@ public:
     Q_INVOKABLE void copyAsHtml();
     Q_INVOKABLE void newWindow();
     Q_INVOKABLE QString clipboardUrl() const;
+    // The link a paste or drop carries, if it is one.
+    static QString linkUrlFrom(const QMimeData *mimeData);
     Q_INVOKABLE QString clipboardText() const;
     Q_INVOKABLE bool editorTextChanged();
     QList<TextRange> hiddenRangesAt(int position) const;

@@ -24,20 +24,32 @@ public:
     // The first and last positions in view.
     std::pair<int, int> visiblePositions() const;
 
+    // Bold, italic or strikethrough on or off at the caret or selection.
+    void toggleWrap(const QString &marker);
+    // Links the selection, or a placeholder, to the URL on the clipboard.
+    void insertLink();
+
 signals:
     // The view scrolled, resized or reflowed, so other positions are in it.
     void viewChanged();
+    // The writer changed the text, not a pass of formatting or a load.
+    void edited();
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void insertFromMimeData(const QMimeData *source) override;
 
 private:
     void applyFont();
     void applyTheme();
     void placeColumn();
+    void moveCaretVisibly(int direction);
+    void movePage(int direction, bool extendSelection);
+    int skipHidden(int position, int direction) const;
     QColor mutedColour() const;
 
     Backend *m_backend;
