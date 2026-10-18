@@ -24,6 +24,9 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
+#include <QMessageBox>
+#include <QFileDialog>
+#include <QFontDialog>
 #include <QShortcut>
 #include <QStatusBar>
 #include <QVBoxLayout>
@@ -375,6 +378,12 @@ struct WindowFixture {
     }
 };
 
+// The window's sheet of this name once it is up, or nothing.
+static QMessageBox *sheet(QWidget *window, const QString &name) {
+    auto *box = window->findChild<QMessageBox *>(name);
+    return box && box->isVisible() ? box : nullptr;
+}
+
 class WriteTest : public QObject {
     Q_OBJECT
 
@@ -457,51 +466,6 @@ private slots:
         QFont pointFont;
         pointFont.setPointSizeF(11.0);
         QCOMPARE(Backend::printFont(pointFont, 144.0).pointSizeF(), 11.0);
-    }
-
-    void showsTheCaretAfterOpeningFromTheOpenDialog() {
-        QTemporaryDir directory;
-        QVERIFY(directory.isValid());
-        const QString path = directory.filePath(QStringLiteral("long.md"));
-        QByteArray contents;
-        for (int line = 0; line < 3000; ++line)
-            contents += "A line of text, number " + QByteArray::number(line) + "\n";
-        writeFile(path, contents);
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, mainQmlUrl());
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        auto *editor = window->findChild<QQuickItem *>(QStringLiteral("sourceEditor"));
-        QObject *searchField = window->findChild<QObject *>(QStringLiteral("searchField"));
-        QVERIFY(editor && searchField);
-        QMetaObject::invokeMethod(editor, "forceActiveFocus");
-        QQuickItem *caret = nullptr;
-        for (QQuickItem *child : editor->childItems()) {
-            if (child->width() == 1)
-                caret = child;
-        }
-        QVERIFY(caret);
-
-        // The file loads while the Open dialog still has the focus, and the
-        // view scrolls to the end of it.
-        QMetaObject::invokeMethod(searchField, "forceActiveFocus");
-        QVERIFY(!editor->property("cursorVisible").toBool());
-        backend.open(QUrl::fromLocalFile(path));
-        QTRY_VERIFY(window->findChild<QObject *>(QStringLiteral("editorScroll"))
-                        ->property("contentY").toReal() > 0);
-
-        // Back in the editor, the caret shows without a scroll or a click.
-        QMetaObject::invokeMethod(editor, "forceActiveFocus");
-        QTRY_VERIFY(editor->property("cursorVisible").toBool());
-        QTRY_VERIFY(caret->isVisible());
-        backend.discardRecovery();
     }
 
     void restylesALongDocumentAtOnce() {
@@ -2257,6 +2221,272 @@ private slots:
         QCOMPARE(status->text(), fixture.backend.status());
     }
 
+    void asksBeforeClosingWithUnsavedChanges() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("unsaved"));
+        QVERIFY(fixture.backend.modified());
+        QSignalSpy cancelled(&fixture.window, &MainWindow::closeCancelled);
+
+        QVERIFY(fixture.choose(QStringLiteral("Close Window")));
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QMessageBox *asked = sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"));
+        QCOMPARE(asked->text(), QStringLiteral("Do you want to save the changes you made to “Untitled.md”?"));
+        QCOMPARE(asked->informativeText(), QStringLiteral("Your changes will be lost if you don't save them."));
+        QVERIFY(fixture.window.isVisible());
+        asked->button(QMessageBox::Cancel)->click();
+        QTRY_VERIFY(!sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QVERIFY(fixture.window.isVisible());
+        QCOMPARE(cancelled.count(), 1);
+
+        // Cmd+W asks the same, and Don't Save closes without saving.
+        QTest::keyClick(&fixture.window, Qt::Key_W, Qt::ControlModifier);
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Discard)->click();
+        QTRY_VERIFY(!fixture.window.isVisible());
+        QCOMPARE(cancelled.count(), 1);
+    }
+
+    void unsavedChangesDialogAnswersToItsKeys() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("keys.md"));
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.backend.saveAs(QUrl::fromLocalFile(path));
+        fixture.load(QStringLiteral("typed"));
+        const auto ask = [&fixture]() {
+            fixture.window.close();
+            return QTest::qWaitFor([&fixture]() {
+                return sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")) != nullptr;
+            });
+        };
+
+        // Esc cancels: the window stays and the file is untouched. (The
+        // native alert adds Cmd+. for Cancel and Cmd+D for Don't Save.)
+        QVERIFY(ask());
+        QTest::keyClick(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")), Qt::Key_Escape);
+        QTRY_VERIFY(!sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QVERIFY(fixture.window.isVisible());
+        QCOMPARE(readFile(path), QByteArray());
+
+        // Return takes Save, and the window closes once the save is done.
+        QVERIFY(ask());
+        QTest::keyClick(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")), Qt::Key_Return);
+        QTRY_VERIFY(!fixture.window.isVisible());
+        QCOMPARE(readFile(path), QByteArray("typed"));
+    }
+
+    void dropsAPendingCloseWhenItsSaveFails() {
+        auto directory = std::make_unique<QTemporaryDir>();
+        QVERIFY(directory->isValid());
+        const QString path = directory->filePath(QStringLiteral("gone.md"));
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.backend.saveAs(QUrl::fromLocalFile(path));
+        fixture.load(QStringLiteral("typed"));
+        QSignalSpy cancelled(&fixture.window, &MainWindow::closeCancelled);
+
+        // The writer chose Save in the close prompt, and the save failed.
+        directory.reset();
+        fixture.window.close();
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QSignalSpy failed(&fixture.backend, &Backend::saveFailed);
+        sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Save)->click();
+        QTRY_COMPARE(failed.count(), 1);
+        QVERIFY(fixture.window.isVisible());
+        QCOMPARE(cancelled.count(), 1);
+
+        // A later save, such as an auto-save, must not close the window.
+        QTemporaryDir elsewhere;
+        fixture.backend.saveAs(QUrl::fromLocalFile(elsewhere.filePath(QStringLiteral("x.md"))));
+        QCoreApplication::processEvents();
+        QVERIFY(fixture.window.isVisible());
+    }
+
+    void holdsAutoSaveWhileTheWriterDecides() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("deciding.md"));
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.backend.saveAs(QUrl::fromLocalFile(path));
+        QSignalSpy savedSpy(&fixture.backend, &Backend::saveSucceeded);
+
+        // Closing right after typing opens the unsaved-changes sheet, and
+        // nothing is saved behind it while the writer decides.
+        fixture.load(QStringLiteral("undecided"));
+        fixture.window.close();
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QTest::qWait(1200);
+        QCOMPARE(savedSpy.count(), 0);
+        QCOMPARE(readFile(path), QByteArray());
+
+        // Cancel lets auto-save carry on.
+        sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Cancel)->click();
+        QTRY_COMPARE(readFile(path), QByteArray("undecided"));
+    }
+
+    void keepsTheWritersTextWhenTheChangeDialogIsDismissed() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("changed.md"));
+        writeFile(path, "theirs\n");
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.backend.open(QUrl::fromLocalFile(path));
+        fixture.load(QStringLiteral("mine\n"));
+
+        // Esc closes the sheet without a choice, and the writer's text stays.
+        emit fixture.backend.externalChangeDetected(false, true);
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+        QMessageBox *asked = sheet(&fixture.window, QStringLiteral("externalChangeSheet"));
+        QCOMPARE(asked->text(), QStringLiteral("File changed"));
+        QCOMPARE(asked->informativeText(),
+                 QStringLiteral("This file changed outside Write. Reloading will discard your changes."));
+        QTest::keyClick(asked, Qt::Key_Escape);
+        QTRY_VERIFY(!sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+        QCOMPARE(fixture.text(), QStringLiteral("mine\n"));
+        QVERIFY(fixture.backend.modified());
+
+        // Reload takes the file's text.
+        emit fixture.backend.externalChangeDetected(false, true);
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+        sheet(&fixture.window, QStringLiteral("externalChangeSheet"))->findChild<QPushButton *>(
+            QStringLiteral("reloadButton"))->click();
+        QTRY_COMPARE(fixture.text(), QStringLiteral("theirs\n"));
+
+        // A removed file is kept by default, as the writer's text is all there is.
+        emit fixture.backend.externalChangeDetected(true, false);
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+        asked = sheet(&fixture.window, QStringLiteral("externalChangeSheet"));
+        QCOMPARE(asked->text(), QStringLiteral("File removed"));
+        QCOMPARE(asked->defaultButton()->objectName(), QStringLiteral("keepButton"));
+        asked->defaultButton()->click();
+        fixture.backend.discardRecovery();
+    }
+
+    void keepsShortcutsBehindDialogs() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("unsaved"));
+        fixture.window.close();
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+
+        QTest::keyClick(&fixture.window, Qt::Key_F, Qt::ControlModifier);
+        QVERIFY(!fixture.window.findBar()->isOpen());
+        // The native menu bar takes its keys before Qt sees them, so its
+        // commands have to be off while the sheet is up.
+        QVERIFY(!fixture.choose(QStringLiteral("Find")));
+        QVERIFY(!fixture.window.findBar()->isOpen());
+        sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Cancel)->click();
+        QTRY_VERIFY(!sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QVERIFY(fixture.choose(QStringLiteral("Find")));
+        QVERIFY(fixture.window.findBar()->isOpen());
+        fixture.backend.discardRecovery();
+    }
+
+    void holdsCommandsWhileASheetIsUp() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("unsaved"));
+        fixture.window.close();
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QVERIFY(!fixture.window.commandsEnabled());
+        QVERIFY(!fixture.command(QStringLiteral("Close Window"))->isEnabled());
+        // A second close asks nothing more.
+        fixture.window.close();
+        QCoreApplication::processEvents();
+        int shown = 0;
+        for (QMessageBox *box : fixture.window.findChildren<QMessageBox *>())
+            shown += box->isVisible();
+        QCOMPARE(shown, 1);
+        // Minimizing is the window's own business, sheet or no sheet.
+        QVERIFY(fixture.command(QStringLiteral("Minimize"))->isEnabled());
+        sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Cancel)->click();
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+
+        // So it is with the Fonts panel up.
+        QVERIFY(fixture.choose(QStringLiteral("Font…")));
+        auto *panel = fixture.window.findChild<QFontDialog *>(QStringLiteral("fontsPanel"));
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->isVisible());
+        QVERIFY(!fixture.window.commandsEnabled());
+        panel->reject();
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+        fixture.backend.discardRecovery();
+    }
+
+    void choosesTheEditorFontFromTheFontsPanel() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        // The bundled font is the app's to register, so the test starts from
+        // one the system has.
+        const QString before = fixture.backend.editorFont();
+        fixture.backend.setEditorFont(QStringLiteral("Menlo"));
+        QVERIFY(fixture.choose(QStringLiteral("Font…")));
+        auto *panel = fixture.window.findChild<QFontDialog *>(QStringLiteral("fontsPanel"));
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->isVisible());
+        QCOMPARE(panel->currentFont().family(), QStringLiteral("Menlo"));
+        panel->setCurrentFont(QFont(QStringLiteral("Monaco")));
+        panel->accept();
+        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
+        QCOMPARE(fixture.editor()->font().family(), QStringLiteral("Monaco"));
+        QTRY_VERIFY(fixture.editor()->hasFocus());
+        fixture.backend.setEditorFont(before);
+    }
+
+    // A file opened from the Open panel lands with the writer back in the
+    // text, the caret in view.
+    void showsTheCaretAfterOpeningFromTheOpenDialog() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("long.md"));
+        QByteArray contents;
+        for (int line = 0; line < 3000; ++line)
+            contents += "A line of text, number " + QByteArray::number(line) + "\n";
+        writeFile(path, contents);
+
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.window.findBar()->open(false);
+        QVERIFY(fixture.choose(QStringLiteral("Open…")));
+        QFileDialog *panel = nullptr;
+        QTRY_VERIFY((panel = fixture.window.findChild<QFileDialog *>(QStringLiteral("openPanel")))
+                    && panel->isVisible());
+        // The test plays the panel's part: QFileDialog cannot be driven
+        // offscreen, so it says what the writer chose, as the panel would.
+        QCOMPARE(panel->fileMode(), QFileDialog::ExistingFile);
+        emit panel->urlSelected(QUrl::fromLocalFile(path));
+        static_cast<QDialog *>(panel)->done(QDialog::Accepted);
+        QTRY_COMPARE(fixture.backend.fileUrl(), QUrl::fromLocalFile(path));
+
+        QTRY_VERIFY(fixture.editor()->hasFocus());
+        QVERIFY(fixture.editor()->viewport()->rect().intersects(fixture.editor()->cursorRect()));
+        fixture.backend.discardRecovery();
+    }
+
+    void savesAsFromASheet() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("named.md"));
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("text"));
+        QVERIFY(fixture.choose(QStringLiteral("Save As…")));
+        QFileDialog *panel = nullptr;
+        QTRY_VERIFY((panel = fixture.window.findChild<QFileDialog *>(QStringLiteral("savePanel")))
+                    && panel->isVisible());
+        QCOMPARE(panel->acceptMode(), QFileDialog::AcceptSave);
+        QCOMPARE(panel->windowModality(), Qt::WindowModal);
+        QVERIFY(!fixture.window.commandsEnabled());
+        emit panel->urlSelected(QUrl::fromLocalFile(path));
+        static_cast<QDialog *>(panel)->done(QDialog::Accepted);
+        QTRY_COMPARE(readFile(path), QByteArray("text"));
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());
@@ -2409,38 +2639,6 @@ private slots:
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("`~~x~~`")).isEmpty());
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("a ~~ b ~~ c")).isEmpty());
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("~~~x~~~")).isEmpty());
-    }
-
-    void keepsShortcutsBehindDialogs() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        QObject *dialog = window->findChild<QObject *>(QStringLiteral("unsavedChangesDialog"));
-        QVERIFY(dialog);
-
-        QMetaObject::invokeMethod(dialog, "open");
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
-        QVERIFY(!window->property("searchOpen").toBool());
-
-        // The native menu bar takes its keys before Qt sees them, so its
-        // commands have to be off while the dialog is up.
-        QVERIFY(!chooseFromMenu(window, QStringLiteral("Find")));
-        QVERIFY(!window->property("searchOpen").toBool());
-        QMetaObject::invokeMethod(dialog, "close");
-        QTRY_VERIFY(!dialog->property("visible").toBool());
-        QVERIFY(chooseFromMenu(window, QStringLiteral("Find")));
-        QVERIFY(window->property("searchOpen").toBool());
     }
 
     void togglesTheFontPickerFromItsButton() {
@@ -3115,89 +3313,6 @@ private slots:
         QCOMPARE(editor->property("cursorPosition").toInt(), 0);
     }
 
-    void unsavedChangesDialogAnswersToItsKeys() {
-        const QString dialogQmlPath = QFINDTESTDATA("../src/UnsavedChangesDialog.qml");
-        QVERIFY(!dialogQmlPath.isEmpty());
-
-        QQmlEngine engine;
-        engine.addImportPath(QFileInfo(dialogQmlPath).absolutePath());
-        QQmlComponent component(&engine);
-        const QByteArray harness = R"QML(
-            import QtQuick
-            import QtQuick.Controls
-
-            ApplicationWindow {
-                width: 640
-                height: 420
-                visible: true
-
-                UnsavedChangesDialog {
-                    id: dialog
-                    objectName: "unsavedChangesDialog"
-                    containerWidth: parent.width
-                    containerHeight: parent.height
-                }
-            }
-        )QML";
-        component.setData(harness, QUrl::fromLocalFile(
-            QFileInfo(dialogQmlPath).absolutePath() + QStringLiteral("/ShortcutHarness.qml")));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> root(component.create());
-        QVERIFY2(root, qPrintable(component.errorString()));
-
-        auto *window = qobject_cast<QQuickWindow *>(root.data());
-        QVERIFY(window);
-        QObject *dialog = root->findChild<QObject *>(QStringLiteral("unsavedChangesDialog"));
-        QVERIFY(dialog);
-
-        QSignalSpy cancelSpy(dialog, SIGNAL(cancelRequested()));
-        QSignalSpy discardSpy(dialog, SIGNAL(discardRequested()));
-        QSignalSpy saveSpy(dialog, SIGNAL(saveRequested()));
-
-        // Cmd+. cancels, Cmd+D discards, and Return takes the Save button the
-        // dialog opens focused on.
-        const auto cancel = [window] { QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier); };
-        const auto discard = [window] { QTest::keyClick(window, Qt::Key_D, Qt::ControlModifier); };
-        const auto save = [window] { QTest::keyClick(window, Qt::Key_Return); };
-
-        // Bare letters and other Cmd chords do nothing, so a stray keypress
-        // while typing can never discard work.
-        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        QTest::keyClick(window, Qt::Key_C);
-        QTest::keyClick(window, Qt::Key_D);
-        QTest::keyClick(window, Qt::Key_S);
-        QTest::keyClick(window, Qt::Key_C, Qt::ControlModifier);
-        QCOMPARE(cancelSpy.count(), 0);
-        QCOMPARE(discardSpy.count(), 0);
-        QCOMPARE(saveSpy.count(), 0);
-        QVERIFY(dialog->property("opened").toBool());
-
-        cancel();
-        QTRY_COMPARE(cancelSpy.count(), 1);
-        QVERIFY(!dialog->property("opened").toBool());
-
-        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        discard();
-        QTRY_COMPARE(discardSpy.count(), 1);
-        QVERIFY(!dialog->property("opened").toBool());
-
-        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        save();
-        QTRY_COMPARE(saveSpy.count(), 1);
-        QVERIFY(!dialog->property("opened").toBool());
-
-        // With the dialog closed, its keys are inert.
-        cancel();
-        discard();
-        save();
-        QCOMPARE(cancelSpy.count(), 1);
-        QCOMPARE(discardSpy.count(), 1);
-        QCOMPARE(saveSpy.count(), 1);
-    }
-
 
     void stepsTextSize() {
         Backend backend;
@@ -3463,30 +3578,6 @@ private slots:
         }
     }
 
-    void holdsAutoSaveWhileTheWriterDecides() {
-        QTemporaryDir directory;
-        QVERIFY(directory.isValid());
-        const QString path = directory.filePath(QStringLiteral("deciding.md"));
-
-        Backend backend;
-        QScopedPointer<QObject> editor(makeEditor(backend));
-        QVERIFY(editor);
-        backend.saveAs(QUrl::fromLocalFile(path));
-        QSignalSpy savedSpy(&backend, &Backend::saveSucceeded);
-
-        // Closing right after typing opens the unsaved-changes prompt.
-        editor->setProperty("text", QStringLiteral("undecided"));
-        QVERIFY(backend.editorTextChanged());
-        backend.holdAutoSave(true);
-        QTest::qWait(1200);
-        QCOMPARE(savedSpy.count(), 0);
-        QCOMPARE(readFile(path), QByteArray());
-
-        // Cancel lets auto-save carry on.
-        backend.holdAutoSave(false);
-        QTRY_COMPARE(readFile(path), QByteArray("undecided"));
-    }
-
     void startsANamedFileThatIsNotThereYet() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -3573,30 +3664,6 @@ private slots:
                  QStringLiteral("Recovered unsaved changes; asked.md was not opened."));
         QCOMPARE(editor->property("text").toString(), QStringLiteral("recovered"));
         backend.discardRecovery();
-    }
-
-    void dropsAPendingCloseWhenItsSaveFails() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        // The writer chose Save in the close prompt, and the save failed.
-        window->setProperty("pendingAction", QStringLiteral("close"));
-        window->setProperty("awaitingPendingSave", true);
-        QSignalSpy failedSpy(&backend, &Backend::saveFailed);
-        backend.saveAs(QUrl::fromLocalFile(QStringLiteral("/nonexistent-dir/x.md")));
-        QCOMPARE(failedSpy.count(), 1);
-
-        // A later save, such as an auto-save, must not close the window.
-        QCOMPARE(window->property("pendingAction").toString(), QString());
-        QVERIFY(!window->property("awaitingPendingSave").toBool());
     }
 
     void asksAboutUnsavedChangesBeforeClosingOrQuitting() {
@@ -4042,29 +4109,6 @@ private slots:
         QVERIFY(QFile::rename(replacement, path));
         QTRY_VERIFY(externalSpy.count() >= 1);
         QTRY_VERIFY(backend.m_fileWatcher.files().contains(path));
-    }
-
-    void keepsTheWritersTextWhenTheChangeDialogIsDismissed() {
-        QQmlEngine engine;
-        QQmlComponent component(&engine);
-        component.setData("import QtQuick\nimport QtQuick.Controls\nApplicationWindow {"
-                          " property alias dialog: dialog\n"
-                          " ExternalChangeDialog { id: dialog } }",
-                          QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml")));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY(window);
-        QObject *dialog = window->property("dialog").value<QObject *>();
-        QVERIFY(dialog);
-        QSignalSpy keepSpy(dialog, SIGNAL(keepRequested()));
-        QSignalSpy reloadSpy(dialog, SIGNAL(reloadRequested()));
-
-        // Escape closes it without a choice.
-        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
-        QTRY_COMPARE(keepSpy.count(), 1);
-        QCOMPARE(reloadSpy.count(), 0);
     }
 
     void opensAnExistingFileFromTheCommandLine() {

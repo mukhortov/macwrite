@@ -2,11 +2,16 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QFontDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QShortcut>
 #include <QStatusBar>
 #include <QVBoxLayout>
@@ -44,6 +49,18 @@ MainWindow::MainWindow(Backend *backend, QWidget *parent)
     connect(m_backend, &Backend::modifiedChanged, this, &MainWindow::updateTitle);
     connect(m_backend, &Backend::statusChanged, this, &MainWindow::updateStatus);
     connect(m_backend, &Backend::wordCountChanged, this, &MainWindow::updateWordCount);
+    connect(m_backend, &Backend::openDialogRequested, this, &MainWindow::showOpenPanel);
+    connect(m_backend, &Backend::saveDialogRequested, this, &MainWindow::showSavePanel);
+    connect(m_backend, &Backend::externalChangeDetected, this, &MainWindow::askAboutExternalChange);
+    connect(m_backend, &Backend::saveSucceeded, this, [this]() {
+        const bool confirmed = m_awaitingPendingSave;
+        m_awaitingPendingSave = false;
+        if (confirmed && m_pending != Pending::None)
+            completePending();
+    });
+    // A failed save leaves the document as it was, so the close or open it
+    // was for is off; a later save must not carry it out.
+    connect(m_backend, &Backend::saveFailed, this, &MainWindow::cancelPending);
     updateTitle();
     updateStatus();
     updateWordCount();
@@ -118,7 +135,7 @@ void MainWindow::buildMenus() {
                [this]() { m_backend->decreaseTextSize(); });
     addCommand(view, QStringLiteral("Actual Size"), QKeySequence(QStringLiteral("Ctrl+0")),
                [this]() { m_backend->resetTextSize(); });
-    addCommand(view, QStringLiteral("Font…"), QKeySequence(), []() {});
+    addCommand(view, QStringLiteral("Font…"), QKeySequence(), [this]() { showFontsPanel(); });
     view->addSeparator();
     // Cmd+Ctrl+F, as Qt spells Cmd as Ctrl and the Control key as Meta.
     m_fullScreen = addCommand(view, QStringLiteral("Enter Full Screen"),
@@ -166,7 +183,18 @@ QAction *MainWindow::addCommand(QMenu *menu, const QString &text, const QKeySequ
 }
 
 bool MainWindow::commandsEnabled() const {
-    return true;
+    return m_waitingOn.isEmpty();
+}
+
+// A dialog is only taken down without an answer along with the window, so
+// its answer is what ends the wait.
+void MainWindow::waitOn(QDialog *dialog) {
+    m_waitingOn.insert(dialog);
+    connect(dialog, &QDialog::finished, this, [this, dialog]() {
+        m_waitingOn.remove(dialog);
+        updateCommands();
+    });
+    updateCommands();
 }
 
 void MainWindow::updateCommands() {
@@ -229,4 +257,173 @@ void MainWindow::showEvent(QShowEvent *event) {
 void MainWindow::resizeEvent(QResizeEvent *event) {
     QMainWindow::resizeEvent(event);
     updateStatus();
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    if (m_closeConfirmed || !m_backend->modified()) {
+        QMainWindow::closeEvent(event);
+        return;
+    }
+    event->ignore();
+    m_pending = Pending::Close;
+    askAboutUnsavedChanges();
+}
+
+void MainWindow::requestOpen(const QUrl &url) {
+    // A panel closed without a choice can still say so with an empty one.
+    if (url.isEmpty())
+        return;
+    if (!m_backend->modified()) {
+        m_backend->open(url);
+        m_editor->setFocus();
+        return;
+    }
+    m_pendingUrl = url;
+    m_pending = Pending::Open;
+    askAboutUnsavedChanges();
+}
+
+void MainWindow::askAboutUnsavedChanges() {
+    if (m_unsavedSheet && m_waitingOn.contains(m_unsavedSheet))
+        return;
+
+    auto *sheet = new QMessageBox(this);
+    sheet->setObjectName(QStringLiteral("unsavedChangesSheet"));
+    sheet->setAttribute(Qt::WA_DeleteOnClose);
+    sheet->setWindowModality(Qt::WindowModal);
+    sheet->setText(QStringLiteral("Do you want to save the changes you made to “%1”?")
+                       .arg(m_backend->fileName()));
+    sheet->setInformativeText(QStringLiteral("Your changes will be lost if you don't save them."));
+    // macOS names the Discard button "Don't Save" and gives it Cmd+D.
+    sheet->setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    sheet->setDefaultButton(QMessageBox::Save);
+    sheet->setEscapeButton(QMessageBox::Cancel);
+    connect(sheet, &QMessageBox::finished, this, [this, sheet]() {
+        const QMessageBox::StandardButton answer = sheet->standardButton(sheet->clickedButton());
+        if (answer == QMessageBox::Discard) {
+            m_backend->discardRecovery();
+            // A window that closes takes its document with it; anything else
+            // the sheet was for goes on with auto-save as before.
+            const bool closing = m_pending == Pending::Close;
+            completePending();
+            if (!closing)
+                m_backend->holdAutoSave(false);
+            return;
+        }
+        m_backend->holdAutoSave(false);
+        if (answer == QMessageBox::Save) {
+            m_awaitingPendingSave = true;
+            m_backend->save();
+        } else {
+            cancelPending();
+        }
+    });
+    m_unsavedSheet = sheet;
+    // Discard must still mean discard, so nothing is auto-saved while the
+    // writer decides.
+    m_backend->holdAutoSave(true);
+    waitOn(sheet);
+    sheet->open();
+}
+
+void MainWindow::completePending() {
+    const Pending action = m_pending;
+    m_pending = Pending::None;
+    if (action == Pending::Close) {
+        m_closeConfirmed = true;
+        close();
+    } else if (action == Pending::Open) {
+        m_backend->open(m_pendingUrl);
+        m_editor->setFocus();
+    }
+}
+
+void MainWindow::cancelPending() {
+    const Pending action = m_pending;
+    m_pending = Pending::None;
+    m_awaitingPendingSave = false;
+    if (action == Pending::Close)
+        emit closeCancelled();
+}
+
+static const QStringList documentFilters = {QStringLiteral("Markdown files (*.md *.markdown)"),
+                                            QStringLiteral("All files (*)")};
+
+// Open is a panel of its own, as in other Mac apps; Save As is a sheet on
+// the window it saves.
+void MainWindow::showOpenPanel() {
+    auto *panel = new QFileDialog(this, QStringLiteral("Open File"));
+    panel->setObjectName(QStringLiteral("openPanel"));
+    panel->setAttribute(Qt::WA_DeleteOnClose);
+    panel->setAcceptMode(QFileDialog::AcceptOpen);
+    panel->setFileMode(QFileDialog::ExistingFile);
+    panel->setNameFilters(documentFilters);
+    panel->setWindowModality(Qt::ApplicationModal);
+    connect(panel, &QFileDialog::urlSelected, this, &MainWindow::requestOpen);
+    panel->show();
+}
+
+void MainWindow::showSavePanel(const QUrl &suggestedUrl) {
+    auto *panel = new QFileDialog(this, QStringLiteral("Save File"));
+    panel->setObjectName(QStringLiteral("savePanel"));
+    panel->setAttribute(Qt::WA_DeleteOnClose);
+    panel->setAcceptMode(QFileDialog::AcceptSave);
+    panel->setNameFilters(documentFilters);
+    if (suggestedUrl.isLocalFile()) {
+        const QFileInfo suggested(suggestedUrl.toLocalFile());
+        panel->setDirectory(suggested.absolutePath());
+        panel->selectFile(suggested.fileName());
+    }
+    connect(panel, &QFileDialog::urlSelected, m_backend, &Backend::saveAs);
+    connect(panel, &QDialog::rejected, this, &MainWindow::cancelPending);
+    waitOn(panel);
+    panel->open();
+}
+
+void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
+    if (m_changeSheet && m_waitingOn.contains(m_changeSheet))
+        return;
+
+    auto *sheet = new QMessageBox(this);
+    sheet->setObjectName(QStringLiteral("externalChangeSheet"));
+    sheet->setAttribute(Qt::WA_DeleteOnClose);
+    sheet->setWindowModality(Qt::WindowModal);
+    sheet->setText(deleted ? QStringLiteral("File removed") : QStringLiteral("File changed"));
+    sheet->setInformativeText(
+        deleted ? QStringLiteral("This file was removed outside Write. Keep your text as an unsaved document?")
+        : locallyModified
+            ? QStringLiteral("This file changed outside Write. Reloading will discard your changes.")
+            : QStringLiteral("This file changed outside Write."));
+    QPushButton *keep = sheet->addButton(QStringLiteral("Keep Mine"), QMessageBox::RejectRole);
+    keep->setObjectName(QStringLiteral("keepButton"));
+    QPushButton *reload = sheet->addButton(QStringLiteral("Reload"), QMessageBox::AcceptRole);
+    reload->setObjectName(QStringLiteral("reloadButton"));
+    // Closing without a choice keeps the writer's text: it is the only copy
+    // of what they wrote.
+    sheet->setEscapeButton(keep);
+    sheet->setDefaultButton(deleted ? keep : reload);
+    connect(sheet, &QMessageBox::finished, this, [this, sheet, reload]() {
+        if (sheet->clickedButton() == reload)
+            m_backend->reloadFromDisk();
+        else
+            m_backend->keepExternalVersion();
+    });
+    m_changeSheet = sheet;
+    waitOn(sheet);
+    sheet->open();
+}
+
+// The Fonts panel sets only the family; the size is the text size's.
+void MainWindow::showFontsPanel() {
+    if (m_fontsPanel && m_waitingOn.contains(m_fontsPanel))
+        return;
+    auto *panel = new QFontDialog(QFont(m_backend->editorFont()), this);
+    panel->setObjectName(QStringLiteral("fontsPanel"));
+    panel->setAttribute(Qt::WA_DeleteOnClose);
+    connect(panel, &QFontDialog::fontSelected, m_backend,
+            [this](const QFont &font) { m_backend->setEditorFont(font.family()); });
+    connect(panel, &QDialog::finished, m_editor, qOverload<>(&QWidget::setFocus));
+    m_fontsPanel = panel;
+    waitOn(panel);
+    panel->open();
 }

@@ -2,6 +2,9 @@
 
 #include <QList>
 #include <QMainWindow>
+#include <QPointer>
+#include <QSet>
+#include <QUrl>
 
 #include <functional>
 
@@ -9,8 +12,10 @@ class Backend;
 class FindBar;
 class MarkdownEditor;
 class QAction;
+class QDialog;
 class QLabel;
 class QMenu;
+class QMessageBox;
 struct WindowGeometry;
 
 // One document's window: its menus, the find bar, the editor and the status
@@ -27,6 +32,8 @@ public:
     // menu bar matches its keys before the sheet would see them.
     bool commandsEnabled() const;
     void applyGeometry(const WindowGeometry &geometry);
+    // Opens a file here, asking first about unsaved changes.
+    void requestOpen(const QUrl &url);
 
 signals:
     void activated();
@@ -35,6 +42,7 @@ signals:
     void closeCancelled();
 
 protected:
+    void closeEvent(QCloseEvent *event) override;
     void changeEvent(QEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -50,6 +58,18 @@ private:
     void updateStatus();
     void updateWordCount();
     void updateCommands();
+    // Keeps the commands off while the dialog waits on the writer.
+    void waitOn(QDialog *dialog);
+    void askAboutUnsavedChanges();
+    void completePending();
+    void cancelPending();
+    void showOpenPanel();
+    void showSavePanel(const QUrl &suggestedUrl);
+    void askAboutExternalChange(bool deleted, bool locallyModified);
+    void showFontsPanel();
+
+    // What the unsaved-changes sheet was asked for.
+    enum class Pending { None, Close, Open };
 
     Backend *m_backend;
     MarkdownEditor *m_editor;
@@ -58,4 +78,14 @@ private:
     QLabel *m_wordCount;
     QAction *m_fullScreen = nullptr;
     QList<QAction *> m_heldCommands;
+    QSet<QObject *> m_waitingOn;
+    QPointer<QMessageBox> m_unsavedSheet;
+    QPointer<QMessageBox> m_changeSheet;
+    QPointer<QDialog> m_fontsPanel;
+    Pending m_pending = Pending::None;
+    QUrl m_pendingUrl;
+    // Only a save chosen in the sheet carries out the pending close or open,
+    // never an auto-save that lands meanwhile.
+    bool m_awaitingPendingSave = false;
+    bool m_closeConfirmed = false;
 };
