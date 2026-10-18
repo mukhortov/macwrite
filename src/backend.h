@@ -9,7 +9,6 @@
 #include <QFutureWatcher>
 #include <QTimer>
 #include <QUrl>
-#include <QVariantList>
 #include <memory>
 #include <optional>
 
@@ -47,20 +46,6 @@ struct WindowGeometry {
 
 class Backend : public QObject {
     Q_OBJECT
-    Q_PROPERTY(QUrl fileUrl READ fileUrl NOTIFY fileUrlChanged)
-    Q_PROPERTY(QString fileName READ fileName NOTIFY fileUrlChanged)
-    Q_PROPERTY(bool modified READ modified NOTIFY modifiedChanged)
-    Q_PROPERTY(QString status READ status NOTIFY statusChanged)
-    Q_PROPERTY(int wordCount READ wordCount NOTIFY wordCountChanged)
-    Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY darkModeChanged)
-    Q_PROPERTY(qreal textScale READ textScale NOTIFY textScaleChanged)
-    Q_PROPERTY(QString themeBackground READ themeBackground NOTIFY themeColorsChanged)
-    Q_PROPERTY(QString themeForeground READ themeForeground NOTIFY themeColorsChanged)
-    Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeColorsChanged)
-    Q_PROPERTY(QString themeSelection READ themeSelection NOTIFY themeColorsChanged)
-    Q_PROPERTY(QString themeSelectionForeground READ themeSelectionForeground NOTIFY themeColorsChanged)
-    Q_PROPERTY(QString editorFont READ editorFont WRITE setEditorFont NOTIFY editorFontChanged)
-    Q_PROPERTY(bool editorFontFixedPitch READ editorFontFixedPitch NOTIFY editorFontChanged)
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -90,20 +75,15 @@ public:
     QString editorFont() const { return m_editorFont; }
     void setEditorFont(const QString &family);
     bool editorFontFixedPitch() const;
-    // Listed the first time it is asked for, then shared by every window.
-    Q_INVOKABLE QStringList availableFonts() const;
     static QString defaultEditorFont();
-    static QStringList selectableFontFamilies(const QStringList &families);
     static int countWords(const QString &text);
     static QString normalizedLinkUrl(const QString &clipboardText);
     static QString suggestedFileName(const QString &text);
     static QFont printFont(const QFont &editorFont, qreal screenDpi);
 
     void attachDocument(QTextDocument *document);
-    // For the QML interface, until it goes.
-    Q_INVOKABLE void attachQuickDocument(QObject *textDocument);
-    Q_INVOKABLE void openDialog();
-    Q_INVOKABLE void open(const QUrl &url);
+    void openDialog();
+    void open(const QUrl &url);
     void openOrStartFile(const QUrl &url);
     // A blank window nobody has written in, which a file opened from Finder
     // may take over.
@@ -111,39 +91,35 @@ public:
     // Drafts left by windows that did not close, such as after a crash, that
     // no window has taken yet.
     static int unclaimedRecoveryDrafts();
-    Q_INVOKABLE void save();
-    Q_INVOKABLE void saveAsDialog();
-    Q_INVOKABLE void saveAs(const QUrl &url);
-    Q_INVOKABLE void discardRecovery();
-    Q_INVOKABLE void reloadFromDisk();
-    Q_INVOKABLE void keepExternalVersion();
-    Q_INVOKABLE void increaseTextSize();
-    Q_INVOKABLE void decreaseTextSize();
-    Q_INVOKABLE void resetTextSize();
-    Q_INVOKABLE void holdAutoSave(bool held);
-    Q_INVOKABLE void printDocument();
-    Q_INVOKABLE void copyAsHtml();
-    Q_INVOKABLE void newWindow();
-    Q_INVOKABLE QString clipboardUrl() const;
+    void save();
+    void saveAsDialog();
+    void saveAs(const QUrl &url);
+    void discardRecovery();
+    void reloadFromDisk();
+    void keepExternalVersion();
+    void increaseTextSize();
+    void decreaseTextSize();
+    void resetTextSize();
+    void holdAutoSave(bool held);
+    void printDocument();
+    void copyAsHtml();
+    void newWindow();
+    QString clipboardUrl() const;
     // The link a paste or drop carries, if it is one.
     static QString linkUrlFrom(const QMimeData *mimeData);
-    Q_INVOKABLE QString clipboardText() const;
-    Q_INVOKABLE bool editorTextChanged();
+    QString clipboardText() const;
+    bool editorTextChanged();
     QList<TextRange> hiddenRangesAt(int position) const;
-    Q_INVOKABLE QVariantList qmlHiddenRangesAt(int position) const;
-    Q_INVOKABLE QString linkUrlAt(int position) const;
+    QString linkUrlAt(int position) const;
     std::optional<EmphasisSpan> emphasisSpanAt(int position, const QString &marker) const;
-    Q_INVOKABLE QVariantMap qmlEmphasisSpanAt(int position, const QString &marker) const;
-    Q_INVOKABLE int cursorPositionStep(int position, int direction) const;
-    Q_INVOKABLE QList<int> searchMatches(const QString &query) const;
-    Q_INVOKABLE void replaceRange(int start, int end, const QString &text);
-    Q_INVOKABLE bool insideFence(int position) const;
-    Q_INVOKABLE int lineStart(int position) const;
-    Q_INVOKABLE int lineEnd(int position) const;
+    int cursorPositionStep(int position, int direction) const;
+    QList<int> searchMatches(const QString &query) const;
+    bool insideFence(int position) const;
+    int lineStart(int position) const;
+    int lineEnd(int position) const;
     WindowGeometry windowGeometry() const;
-    Q_INVOKABLE QVariantMap qmlWindowGeometry() const;
     void saveWindowGeometry(int x, int y, int width, int height, bool maximized);
-    Q_INVOKABLE void documentFontChanged();
+    void documentFontChanged();
 
 signals:
     void fileUrlChanged();

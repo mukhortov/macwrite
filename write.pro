@@ -1,6 +1,6 @@
 !macx: error("Write builds for macOS only.")
 
-QT += core gui widgets printsupport qml quick quickcontrols2 quickdialogs2 concurrent
+QT = core gui widgets printsupport concurrent
 
 CONFIG += c++17 release
 TARGET = Write
@@ -13,7 +13,6 @@ DEFINES += WRITE_VERSION=\\\"$$VERSION\\\"
 QMAKE_INFO_PLIST = macos/Info.plist
 ICON = macos/write.icns
 include(macos/deployment-target.pri)
-LIBS += -framework CoreText
 
 HEADERS += \
     src/appeventfilter.h \

@@ -4,25 +4,17 @@
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextLayout>
-#include <QQmlComponent>
-#include <QQmlContext>
-#include <QQmlExpression>
-#include <QQmlEngine>
-#include <QQuickWindow>
-#include <QQuickStyle>
-#include <QQuickItem>
-#include <QQuickTextDocument>
 #include <QStandardPaths>
 #include <QClipboard>
 #include <QMimeData>
 #include <QWheelEvent>
-#include <QJSValue>
 #include <QAction>
 #include <QMenuBar>
 #include <QPainter>
 #include <QRandomGenerator>
 #include <QLineEdit>
 #include <QLabel>
+#include <QProcess>
 #include <QPushButton>
 #include <QMessageBox>
 #include <QFileDialog>
@@ -47,30 +39,6 @@
 #include "plaintextlayout.h"
 #include "windowmanager.h"
 
-// Counts QML "Binding loop detected" warnings while it is alive, forwarding
-// everything to the previous handler so test output stays intact.
-class BindingLoopCounter {
-public:
-    BindingLoopCounter() {
-        s_count = 0;
-        m_previous = qInstallMessageHandler(handle);
-        s_previous = m_previous;
-    }
-    ~BindingLoopCounter() { qInstallMessageHandler(m_previous); }
-    int count() const { return s_count; }
-
-private:
-    static void handle(QtMsgType type, const QMessageLogContext &context, const QString &message) {
-        if (message.contains(QLatin1String("Binding loop detected")))
-            ++s_count;
-        if (s_previous)
-            s_previous(type, context, message);
-    }
-    static inline int s_count = 0;
-    static inline QtMessageHandler s_previous = nullptr;
-    QtMessageHandler m_previous = nullptr;
-};
-
 // Stands in for QApplication at the end of the event filters: a quit that
 // gets this far was accepted, and stopping it here keeps the test running.
 class QuitRecorder : public QObject {
@@ -87,28 +55,6 @@ protected:
         return QObject::eventFilter(watched, event);
     }
 };
-
-// macOS keeps Cmd+H for hiding the app, so find and replace is Cmd+Option+F.
-static void pressFindAndReplace(QWindow *window) {
-    QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier | Qt::AltModifier);
-}
-
-// The menu bar command with this text.
-static QObject *menuCommand(QObject *window, const QString &text) {
-    const QList<QObject *> objects = window->findChildren<QObject *>();
-    for (QObject *object : objects) {
-        if (object->inherits("QQuickAction") && object->property("text").toString() == text)
-            return object;
-    }
-    return nullptr;
-}
-
-// Runs a command as choosing it from the macOS menu bar does, without its key.
-static bool chooseFromMenu(QObject *window, const QString &text) {
-    QObject *command = menuCommand(window, text);
-    return command && command->property("enabled").toBool()
-        && QMetaObject::invokeMethod(command, "trigger");
-}
 
 // Text that exercises line breaking: wrapped paragraphs, words too long for a
 // line, tabs, right-to-left and unspaced scripts, line separators, emoji.
@@ -391,7 +337,6 @@ private slots:
     void initTestCase() {
         QStandardPaths::setTestModeEnabled(true);
         QVERIFY(m_settingsDirectory.isValid());
-        QQuickStyle::setStyle(QStringLiteral("Material"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                            m_settingsDirectory.path());
@@ -774,7 +719,7 @@ private slots:
     }
 
 
-    // The widget editor asks Backend in C++ types, not QML's maps and lists.
+    // The editor asks Backend in plain C++ types.
     void answersEditorsInPlainTypes() {
         Backend backend;
         QTextDocument document;
@@ -2888,6 +2833,21 @@ private slots:
         backend->discardRecovery();
     }
 
+    // Write's interface is widgets: the app carries no Qt Quick or QML, and
+    // with them no JavaScript engine.
+    void linksNoQtQuick() {
+        const QString binary = QFINDTESTDATA("../build/Write.app/Contents/MacOS/Write");
+        if (binary.isEmpty())
+            QSKIP("Build the app with bin/build first.");
+        QProcess otool;
+        otool.start(QStringLiteral("otool"), {QStringLiteral("-L"), binary});
+        QVERIFY(otool.waitForFinished());
+        const QString libraries = QString::fromUtf8(otool.readAllStandardOutput());
+        QVERIFY(libraries.contains(QStringLiteral("QtWidgets")));
+        QVERIFY2(!libraries.contains(QStringLiteral("QtQuick")), qPrintable(libraries));
+        QVERIFY2(!libraries.contains(QStringLiteral("QtQml")), qPrintable(libraries));
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());
@@ -2972,46 +2932,9 @@ private slots:
         }
     }
 
-    void keepsNotoFromCrowdingTheFontList() {
-        const QStringList fonts = Backend::selectableFontFamilies({
-            QStringLiteral("Noto Sans Devanagari"), QStringLiteral("Liberation Serif"),
-            QStringLiteral("Noto Serif"), QStringLiteral("Noto Sans Tamil UI"),
-            QStringLiteral("adwaita Sans"), QStringLiteral("IBM Plex Mono"),
-            QStringLiteral("Noto Sans"), QStringLiteral("Noto Sans Mono"),
-            QStringLiteral("Liberation Serif"), QStringLiteral("Monospace"),
-            QStringLiteral("Standard Symbols PS"), QStringLiteral("D050000L"),
-            QStringLiteral("Noto Color Emoji"), QStringLiteral("Nimbus Sans [UKWN]"),
-            QStringLiteral("Nimbus Sans [URW ]")});
-        QCOMPARE(fonts, QStringList({QStringLiteral("IBM Plex Mono"),
-                                     QStringLiteral("adwaita Sans"),
-                                     QStringLiteral("Liberation Serif"),
-                                     QStringLiteral("Nimbus Sans"),
-                                     QStringLiteral("Noto Sans"),
-                                     QStringLiteral("Noto Sans Mono"),
-                                     QStringLiteral("Noto Serif")}));
-    }
-
-    void listsInstalledTextFontsOnce() {
-        const QStringList fonts = Backend().availableFonts();
-        QCOMPARE(fonts.value(0), Backend::defaultEditorFont());
-        // Every Mac has these.
-        QVERIFY(fonts.contains(QStringLiteral("Helvetica")));
-        QVERIFY(fonts.contains(QStringLiteral("Menlo")));
-        // Symbol and emoji fonts, and fonts for other scripts, stay out.
-        for (const QString &family : {QStringLiteral("Symbol"), QStringLiteral("Webdings"),
-                                      QStringLiteral("Zapf Dingbats"), QStringLiteral("Apple Color Emoji"),
-                                      QStringLiteral("Bodoni Ornaments"), QStringLiteral("Geeza Pro")})
-            QVERIFY2(!fonts.contains(family), qPrintable(family));
-        for (const QString &family : fonts)
-            QVERIFY2(!family.startsWith(QLatin1Char('.')), qPrintable(family));
-
-        // Another window shares the list rather than reading the fonts again.
-        QCOMPARE(Backend().availableFonts(), fonts);
-    }
-
     void remembersEditorFont() {
-        const QString installed = Backend().availableFonts().value(1);
-        QVERIFY(!installed.isEmpty());
+        // A font macOS always has, beside the bundled default.
+        const QString installed = QStringLiteral("Menlo");
 
         {
             Backend backend;
@@ -3040,41 +2963,6 @@ private slots:
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("`~~x~~`")).isEmpty());
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("a ~~ b ~~ c")).isEmpty());
         QVERIFY(MarkdownHighlighter::inlineMarkup(QStringLiteral("~~~x~~~")).isEmpty());
-    }
-
-    void togglesTheFontPickerFromItsButton() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        auto *button = window->findChild<QQuickItem *>(QStringLiteral("fontButton"));
-        QObject *picker = window->findChild<QObject *>(QStringLiteral("fontPicker"));
-        QVERIFY(button && picker);
-        const auto pickerFonts = [picker]() {
-            QVariant fonts = picker->property("fonts");
-            if (fonts.metaType() == QMetaType::fromType<QJSValue>())
-                fonts = fonts.value<QJSValue>().toVariant();
-            return fonts.toStringList();
-        };
-
-        // The fonts are listed when the picker opens, not with every window.
-        QVERIFY(pickerFonts().isEmpty());
-        const QPoint center = button->mapToScene(
-            QPointF(button->width() / 2, button->height() / 2)).toPoint();
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center);
-        QTRY_VERIFY(picker->property("opened").toBool());
-        QCOMPARE(pickerFonts(), backend.availableFonts());
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center);
-        QTRY_VERIFY(!picker->property("visible").toBool());
     }
 
     void findsInlineMarkdownRanges() {
@@ -3569,36 +3457,6 @@ private slots:
         QTRY_COMPARE(externalChangeSpy.count(), 1);
     }
 
-    void savesAndOpensFromFooterButtons() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QVERIFY(window->findChild<QObject *>(QStringLiteral("sourceEditor")));
-        QVERIFY(!window->findChild<QObject *>(QStringLiteral("renderedPreview")));
-        QVERIFY(!window->findChild<QObject *>(QStringLiteral("modeToggle")));
-
-        QObject *saveButton = window->findChild<QObject *>(QStringLiteral("saveButton"));
-        QObject *openButton = window->findChild<QObject *>(QStringLiteral("openButton"));
-        QVERIFY(saveButton);
-        QVERIFY(openButton);
-
-        QSignalSpy saveDialogSpy(&backend, &Backend::saveDialogRequested);
-        QVERIFY(QMetaObject::invokeMethod(saveButton, "clicked"));
-        QCOMPARE(saveDialogSpy.count(), 1);
-
-        QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
-        QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
-        QCOMPARE(openDialogSpy.count(), 1);
-    }
-
     void copiesRenderedHtml() {
         WindowFixture fixture;
         fixture.load(QStringLiteral("# Title\n\nFirst **bold**.\n\nSecond."));
@@ -3615,47 +3473,6 @@ private slots:
         QVERIFY(!html.contains(QStringLiteral("font-family")));
         QVERIFY(!html.contains(QStringLiteral("margin")));
         QCOMPARE(mimeData->text(), QStringLiteral("Title\nFirst bold.\nSecond."));
-    }
-
-    void flashesScrollBarOnlyWhenPaging() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        QVERIFY2(object, qPrintable(component.errorString()));
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *linger = window->findChild<QObject *>(QStringLiteral("scrollLinger"));
-        QVERIFY(editor);
-        QVERIFY(linger);
-
-        QStringList lines;
-        for (int i = 0; i < 300; ++i)
-            lines << QStringLiteral("line %1").arg(i);
-        editor->setProperty("text", lines.join(QLatin1Char('\n')));
-        QVERIFY(QMetaObject::invokeMethod(editor, "forceActiveFocus"));
-        QTRY_VERIFY(editor->property("activeFocus").toBool());
-
-        // Writing past the bottom edge scrolls along, but leaves the bar hidden.
-        editor->setProperty("cursorPosition", editor->property("length").toInt());
-        QVERIFY(!linger->property("running").toBool());
-
-        QTest::keyClick(window, Qt::Key_PageUp);
-        QVERIFY(linger->property("running").toBool());
-
-        QMetaObject::invokeMethod(linger, "stop");
-        QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
-        QVERIFY(linger->property("running").toBool());
-        QCOMPARE(editor->property("cursorPosition").toInt(), 0);
     }
 
 
@@ -3688,32 +3505,6 @@ private slots:
         QCOMPARE(Backend().textScale(), 1.0);
     }
 
-
-    void shortcutsDialogHasNoBindingLoop() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        // Material's Dialog derives implicitWidth from its content item; a bare
-        // Label assigned as contentItem feeds back into that binding and QML
-        // reports a binding loop for the dialog on every launch.
-        BindingLoopCounter bindingLoops;
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *dialog = window->findChild<QObject *>(QStringLiteral("shortcutsDialog"));
-        QVERIFY(dialog);
-        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        QCOMPARE(dialog->property("implicitWidth").toReal() > 0, true);
-
-        QCOMPARE(bindingLoops.count(), 0);
-    }
 
     void remembersLastSaveDirectory() {
         QTemporaryDir saveDirectory;
@@ -4228,12 +4019,8 @@ private slots:
         QVERIFY(backend.modified());
     }
 
-private:
-    static QUrl mainQmlUrl() {
-        return QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml"));
-    }
-
     // The character formats the highlighter gives a single line of text.
+private:
     static QList<QTextCharFormat> highlightedFormats(const QString &text) {
         QTextDocument document;
         document.setPlainText(text);
@@ -4274,9 +4061,6 @@ private:
         return file.readAll();
     }
 
-    // Loads a bare TextEdit, attaches its document to the backend, and returns
-    // the QQuickTextDocument. The engine and TextEdit are parented to the
-    // backend so they outlive the helper call.
     // The document of an editor that goes with the backend.
     static QTextDocument *attachTextEdit(Backend *backend) {
         auto *editor = new MarkdownEditor(backend);
@@ -4284,7 +4068,6 @@ private:
         return editor->document();
     }
 
-    QQmlEngine m_engine;
     QTemporaryDir m_settingsDirectory;
 };
 

@@ -1,8 +1,7 @@
-QT += core gui quick testlib
+QT = core gui widgets printsupport concurrent testlib
 CONFIG += testcase c++17
 CONFIG -= app_bundle
 include(../macos/deployment-target.pri)
-LIBS += -framework CoreText
 TEMPLATE = app
 TARGET = tst_write
 
@@ -31,4 +30,3 @@ HEADERS += \
     ../src/plaintextlayout.h \
     ../src/windowmanager.h
 
-QT += widgets printsupport quickcontrols2 quickdialogs2 concurrent

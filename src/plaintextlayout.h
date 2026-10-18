@@ -23,7 +23,7 @@ class QTextLayout;
 //
 // Assumes what Write's documents are: no tables, child frames, or inline
 // objects, line heights that never pull a line above its block, and no paint
-// device (Qt Quick sets none).
+// device (QTextEdit sets none).
 class PlainTextLayout : public QAbstractTextDocumentLayout {
     Q_OBJECT
     // QTextEdit asks any layout for the caret's width by this name.

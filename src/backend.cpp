@@ -1,6 +1,5 @@
 #include "backend.h"
 
-#include <CoreText/CoreText.h>
 
 #include <QClipboard>
 #include <QCryptographicHash>
@@ -15,8 +14,6 @@
 #include <QMimeData>
 #include <QPrintDialog>
 #include <QPrinter>
-#include <QQuickItem>
-#include <QQuickTextDocument>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSet>
@@ -32,7 +29,6 @@
 #include <QTextDocument>
 #include <QTextLayout>
 #include <QUrl>
-#include <QVariantMap>
 #include <QWindow>
 
 #include <algorithm>
@@ -59,24 +55,6 @@ constexpr qreal textZoomSteps[] = {0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2
 constexpr int textZoomStepCount = int(std::size(textZoomSteps));
 
 const QString editorFontSetting = QStringLiteral("editor/font");
-
-// Noto ships a separate family per script, which buries every other font in
-// the picker. Offer only the core Latin families; the rest still serve as
-// fallbacks for whatever scripts a document contains.
-const QStringList keptNotoFamilies = {QStringLiteral("Noto Sans"),
-                                      QStringLiteral("Noto Sans Mono"),
-                                      QStringLiteral("Noto Serif")};
-
-// Fontconfig's generic aliases just point at another listed family.
-const QStringList genericFontAliases = {QStringLiteral("Monospace"), QStringLiteral("Mono"),
-                                        QStringLiteral("Sans Serif"), QStringLiteral("Sans"),
-                                        QStringLiteral("Serif"), QStringLiteral("System-ui")};
-
-// Symbol fonts often claim Latin coverage because they map their glyphs onto
-// ASCII, so they can only be told apart by name. D050000L is URW's Dingbats.
-const QRegularExpression symbolFontName(
-    QStringLiteral("symbol|dingbat|emoji|icon|awesome|^D050000L$"),
-    QRegularExpression::CaseInsensitiveOption);
 
 namespace {
 
@@ -296,22 +274,6 @@ void Backend::setTextScale(qreal scale) {
     m_textZoom = scale;
     QSettings().setValue(textZoomSetting, scale);
     emit textScaleChanged();
-}
-
-void Backend::attachQuickDocument(QObject *textDocument) {
-    auto *quickDocument = qobject_cast<QQuickTextDocument *>(textDocument);
-    if (!quickDocument || !quickDocument->textDocument()) {
-        setStatus(QStringLiteral("Could not attach the Markdown renderer."));
-        return;
-    }
-
-    // TextEdit builds its text for drawing only where its viewport shows it
-    // once it observes the viewport, but it turns that on only for text set
-    // through its `text` property. Documents arrive here instead, so without
-    // this every keystroke rebuilds the whole document's text.
-    if (auto *editor = qobject_cast<QQuickItem *>(quickDocument->parent()))
-        editor->setFlag(QQuickItem::ItemObservesViewport);
-    attachDocument(quickDocument->textDocument());
 }
 
 void Backend::attachDocument(QTextDocument *document) {
@@ -644,15 +606,6 @@ QList<TextRange> Backend::hiddenRangesAt(int position) const {
     return ranges;
 }
 
-QVariantList Backend::qmlHiddenRangesAt(int position) const {
-    QVariantList ranges;
-    for (const TextRange &range : hiddenRangesAt(position)) {
-        ranges.append(QVariantMap{{QStringLiteral("start"), range.start},
-                                  {QStringLiteral("end"), range.end}});
-    }
-    return ranges;
-}
-
 // The emphasis span of the marker's kind that the caret sits in or against,
 // in document positions, so a toggle with nothing selected can act on it.
 std::optional<EmphasisSpan> Backend::emphasisSpanAt(int position, const QString &marker) const {
@@ -697,17 +650,6 @@ std::optional<EmphasisSpan> Backend::emphasisSpanAt(int position, const QString 
                             base + contentEnd, base + textEnd};
     }
     return {};
-}
-
-QVariantMap Backend::qmlEmphasisSpanAt(int position, const QString &marker) const {
-    const std::optional<EmphasisSpan> span = emphasisSpanAt(position, marker);
-    if (!span)
-        return {};
-    return {{QStringLiteral("start"), span->start},
-            {QStringLiteral("end"), span->end},
-            {QStringLiteral("contentStart"), span->contentStart},
-            {QStringLiteral("contentEnd"), span->contentEnd},
-            {QStringLiteral("textEnd"), span->textEnd}};
 }
 
 QString Backend::linkUrlAt(int position) const {
@@ -776,10 +718,7 @@ int Backend::cursorPositionStep(int position, int direction) const
 }
 
 // Matched case-insensitively in the text itself, so the offsets are the
-// document's even where lowercasing would change a string's length. A list of
-// ints reaches QML as a sequence over the list itself, where a QVariantList
-// would become a JavaScript array one match at a time, and a short query can
-// match hundreds of thousands of times.
+// document's even where lowercasing would change a string's length.
 QList<int> Backend::searchMatches(const QString &query) const {
     QList<int> matches;
     if (query.isEmpty())
@@ -794,18 +733,6 @@ QList<int> Backend::searchMatches(const QString &query) const {
 }
 
 // One edit command, so a single undo takes the whole replacement back.
-void Backend::replaceRange(int start, int end, const QString &text) {
-    if (!m_document)
-        return;
-    const int last = m_document->characterCount() - 1;
-    QTextCursor cursor(m_document);
-    cursor.beginEditBlock();
-    cursor.setPosition(qBound(0, start, last));
-    cursor.setPosition(qBound(0, end, last), QTextCursor::KeepAnchor);
-    cursor.insertText(text);
-    cursor.endEditBlock();
-}
-
 // Where the line holding `position` starts, as text.lastIndexOf("\n",
 // position - 1) + 1 finds it, from the document's own index of its lines
 // rather than a copy of the whole text.
@@ -861,15 +788,6 @@ WindowGeometry Backend::windowGeometry() const {
             settings.value(QStringLiteral("window/maximized"), defaults.maximized).toBool()};
 }
 
-QVariantMap Backend::qmlWindowGeometry() const {
-    const WindowGeometry geometry = windowGeometry();
-    return {{QStringLiteral("x"), geometry.x},
-            {QStringLiteral("y"), geometry.y},
-            {QStringLiteral("width"), geometry.width},
-            {QStringLiteral("height"), geometry.height},
-            {QStringLiteral("maximized"), geometry.maximized}};
-}
-
 void Backend::saveWindowGeometry(int x, int y, int width, int height, bool maximized) {
     QSettings settings;
     if (!maximized) {
@@ -896,70 +814,6 @@ void Backend::setEditorFont(const QString &family) {
 
 bool Backend::editorFontFixedPitch() const {
     return QFontDatabase::isFixedPitch(m_editorFont);
-}
-
-// The families of the installed fonts that can set the Latin text the editor
-// is written in, read from the macOS font registry. Symbol, icon, and emoji
-// fonts list no English, nor do fonts for other scripts. Asking Qt for its
-// Latin families instead opens and parses every font file, and the parsed
-// fonts stay in memory, some 80 MB of it.
-static QStringList installedLatinFamilies() {
-    QSet<QString> families;
-    CTFontCollectionRef collection = CTFontCollectionCreateFromAvailableFonts(nullptr);
-    CFArrayRef descriptors = CTFontCollectionCreateMatchingFontDescriptors(collection);
-    CFRelease(collection);
-    if (!descriptors)
-        return {};
-
-    for (CFIndex index = 0; index < CFArrayGetCount(descriptors); ++index) {
-        const auto descriptor =
-            static_cast<CTFontDescriptorRef>(CFArrayGetValueAtIndex(descriptors, index));
-        const auto family = static_cast<CFStringRef>(
-            CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute));
-        const auto languages = static_cast<CFArrayRef>(
-            CTFontDescriptorCopyAttribute(descriptor, kCTFontLanguagesAttribute));
-        if (family && languages
-                && CFArrayContainsValue(languages, CFRangeMake(0, CFArrayGetCount(languages)),
-                                        CFSTR("en"))) {
-            const QString name = QString::fromCFString(family);
-            // A leading dot marks a family macOS keeps for its own interface.
-            if (!name.startsWith(QLatin1Char('.')))
-                families.insert(name);
-        }
-        if (family)
-            CFRelease(family);
-        if (languages)
-            CFRelease(languages);
-    }
-    CFRelease(descriptors);
-    return QStringList(families.cbegin(), families.cend());
-}
-
-QStringList Backend::availableFonts() const {
-    static const QStringList fonts = selectableFontFamilies(installedLatinFamilies());
-    return fonts;
-}
-
-QStringList Backend::selectableFontFamilies(const QStringList &families) {
-    QStringList selectable;
-    static const QRegularExpression foundrySuffix(QStringLiteral("\\s*\\[[^\\]]*\\]$"));
-    for (QString family : families) {
-        // The same family from two foundries is listed as "Name [Foundry]".
-        family.remove(foundrySuffix);
-        if (family.startsWith(QStringLiteral("Noto ")) && !keptNotoFamilies.contains(family))
-            continue;
-        if (genericFontAliases.contains(family, Qt::CaseInsensitive)
-                || family.contains(symbolFontName))
-            continue;
-        if (family == defaultEditorFont() || selectable.contains(family, Qt::CaseInsensitive))
-            continue;
-        selectable.append(family);
-    }
-    std::sort(selectable.begin(), selectable.end(), [](const QString &a, const QString &b) {
-        return a.compare(b, Qt::CaseInsensitive) < 0;
-    });
-    selectable.prepend(defaultEditorFont());
-    return selectable;
 }
 
 void Backend::documentFontChanged() {
