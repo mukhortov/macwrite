@@ -779,19 +779,12 @@ int Backend::cursorPositionStep(int position, int direction) const
     return blockStart + qBound(0, stepped, blockTextLength);
 }
 
-// Matched case-insensitively in the text itself, so the offsets are the
-// document's even where lowercasing would change a string's length.
+// Matched in the text itself, ignoring case and the diacritics the query
+// leaves out, so the offsets are the document's.
 QList<int> Backend::searchMatches(const QString &query) const {
-    QList<int> matches;
     if (query.isEmpty())
-        return matches;
-    const QString text = currentDocumentText();
-    int from = 0;
-    while ((from = text.indexOf(query, from, Qt::CaseInsensitive)) >= 0) {
-        matches.append(from);
-        from += query.length();
-    }
-    return matches;
+        return {};
+    return MarkdownHighlighter::findMatches(currentDocumentText(), query);
 }
 
 // One edit command, so a single undo takes the whole replacement back.
