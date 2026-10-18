@@ -111,6 +111,10 @@ public:
     // Where the caret is, so the markup it sits in shows its markers.
     void setCaretPosition(int position);
     QString linkUrlAt(int position) const;
+    int headingPosition(const QString &fragment) const;
+    // Follows a link's destination: the position of the heading it names
+    // here, or -1 once the system has it or the status says why not.
+    int followLink(const QString &destination);
     std::optional<EmphasisSpan> emphasisSpanAt(int position, const QString &marker) const;
     int cursorPositionStep(int position, int direction) const;
     QList<int> searchMatches(const QString &query) const;

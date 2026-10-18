@@ -51,6 +51,7 @@ protected:
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void insertFromMimeData(const QMimeData *source) override;
@@ -63,6 +64,9 @@ private:
     void movePage(int direction, bool extendSelection);
     void zoomByWheel(qreal notches);
     void forgetHoveredLink();
+    // The caret at the heading, and the heading near the top of the view, as
+    // a browser shows an anchor.
+    void showHeading(int position);
     void applySearchHighlights();
     QColor mutedColour() const;
 

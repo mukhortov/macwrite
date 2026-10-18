@@ -6,6 +6,7 @@
 #include <QTextLayout>
 #include <QStandardPaths>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QMimeData>
 #include <QWheelEvent>
 #include <QAction>
@@ -336,6 +337,21 @@ static QMessageBox *sheet(QWidget *window, const QString &name) {
     auto *box = window->findChild<QMessageBox *>(name);
     return box && box->isVisible() ? box : nullptr;
 }
+
+// Takes the URLs Write hands the system to open, in place of the system.
+class UrlCatcher : public QObject {
+    Q_OBJECT
+public:
+    explicit UrlCatcher(const QString &scheme) : m_scheme(scheme) {
+        QDesktopServices::setUrlHandler(scheme, this, "open");
+    }
+    ~UrlCatcher() override { QDesktopServices::unsetUrlHandler(m_scheme); }
+    QList<QUrl> opened;
+public slots:
+    void open(const QUrl &url) { opened << url; }
+private:
+    QString m_scheme;
+};
 
 class WriteTest : public QObject {
     Q_OBJECT
@@ -1701,8 +1717,126 @@ private slots:
         const QPoint over(boxAt(6).x(), boxAt(6).center().y());
         moveTo(over);
         QCOMPARE(editor->hoveredLink(), QStringLiteral("https://example.com"));
+        QCOMPARE(editor->viewport()->cursor().shape(), Qt::IBeamCursor);
         moveTo(QPoint(boxAt(1).x(), over.y()));
         QCOMPARE(editor->hoveredLink(), QString());
+
+        // With ⌘ held, a link is a thing to click.
+        const auto commandMoveTo = [editor](const QPoint &point) {
+            QMouseEvent move(QEvent::MouseMove, point, editor->viewport()->mapToGlobal(point),
+                             Qt::NoButton, Qt::NoButton, Qt::ControlModifier);
+            QApplication::sendEvent(editor->viewport(), &move);
+        };
+        commandMoveTo(over);
+        QCOMPARE(editor->viewport()->cursor().shape(), Qt::PointingHandCursor);
+        commandMoveTo(QPoint(boxAt(1).x(), over.y()));
+        QCOMPARE(editor->viewport()->cursor().shape(), Qt::IBeamCursor);
+    }
+
+    // A local link names a heading by its text: as GitHub writes it, without
+    // punctuation, or as other tools do, with it.
+    void findsTheHeadingALocalLinkPointsAt() {
+        Backend backend;
+        QTextDocument document;
+        backend.attachDocument(&document);
+        QTextCursor(&document).insertText(QStringLiteral(
+            "# Intro\n"
+            "## Ability Score Improvement (4th & 8th Level)\n"
+            "## Expertise\n"
+            "```\n# Not a Heading\n```\n"
+            "## Expertise\n"
+            "### **Bold** and [linked](https://example.com) `code`\n"
+            "## Café Crème\n"
+            "Plain text"));
+        const auto at = [&document](int block) { return document.findBlockByNumber(block).position(); };
+        QCOMPARE(backend.headingPosition(QStringLiteral("intro")), at(0));
+        QCOMPARE(backend.headingPosition(QStringLiteral("Intro")), at(0));
+        QCOMPARE(backend.headingPosition(QStringLiteral("ability-score-improvement-4th--8th-level")), at(1));
+        QCOMPARE(backend.headingPosition(QStringLiteral("ability-score-improvement-(4th-&-8th-level)")), at(1));
+        // A repeated heading is numbered from its second; code holds none.
+        QCOMPARE(backend.headingPosition(QStringLiteral("expertise")), at(2));
+        QCOMPARE(backend.headingPosition(QStringLiteral("expertise-1")), at(6));
+        QCOMPARE(backend.headingPosition(QStringLiteral("not-a-heading")), -1);
+        // Markup counts by what it shows.
+        QCOMPARE(backend.headingPosition(QStringLiteral("bold-and-linked-code")), at(7));
+        // Letters past ASCII, written out or as a browser sends them.
+        QCOMPARE(backend.headingPosition(QStringLiteral("café-crème")), at(8));
+        QCOMPARE(backend.headingPosition(QStringLiteral("caf%C3%A9-cr%C3%A8me")), at(8));
+        QCOMPARE(backend.headingPosition(QStringLiteral("plain-text")), -1);
+        QCOMPARE(backend.headingPosition(QStringLiteral("nowhere")), -1);
+    }
+
+    // ⌘-click follows a link; a plain click puts the caret in it, to edit it.
+    void followsALinkOnCommandClick() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        MarkdownEditor *editor = fixture.editor;
+        QWidget *viewport = editor->viewport();
+        const auto pointAt = [editor](int position) {
+            QTextCursor cursor(editor->document());
+            cursor.setPosition(position);
+            const QRect box = editor->cursorRect(cursor);
+            return QPoint(box.x() + 2, box.center().y());
+        };
+        QString text = QStringLiteral("[Go](#far-away) or [site](https://example.com/page)\n");
+        for (int line = 0; line < 200; ++line)
+            text += QStringLiteral("Line %1\n").arg(line);
+        text += QStringLiteral("## Far Away\n");
+        for (int line = 0; line < 200; ++line)
+            text += QStringLiteral("More %1\n").arg(line);
+        const int heading = text.indexOf(QLatin1String("## Far Away"));
+        fixture.load(text, text.size());
+        editor->verticalScrollBar()->setValue(0);
+
+        QTest::mouseClick(viewport, Qt::LeftButton, Qt::NoModifier, pointAt(2));
+        QVERIFY(editor->textCursor().position() <= 3);
+        QCOMPARE(editor->verticalScrollBar()->value(), 0);
+
+        // A local link goes to its heading, which lands near the top.
+        QTest::mouseClick(viewport, Qt::LeftButton, Qt::ControlModifier, pointAt(2));
+        QCOMPARE(editor->textCursor().position(), heading);
+        QVERIFY(editor->cursorRect().top() >= 0);
+        QVERIFY(editor->cursorRect().top() < viewport->height() / 3);
+
+        // A web link goes to the system, which opens the browser.
+        UrlCatcher web(QStringLiteral("https"));
+        editor->verticalScrollBar()->setValue(0);
+        QTest::mouseClick(viewport, Qt::LeftButton, Qt::ControlModifier,
+                          pointAt(text.indexOf(QLatin1String("site")) + 1));
+        QCOMPARE(web.opened, QList<QUrl>{QUrl(QStringLiteral("https://example.com/page"))});
+        QCOMPARE(editor->textCursor().position(), heading);
+
+        // A missing heading says so.
+        fixture.load(QStringLiteral("[Gone](#nowhere)"), 0);
+        QTest::mouseClick(viewport, Qt::LeftButton, Qt::ControlModifier, pointAt(2));
+        QCOMPARE(fixture.backend.status(), QStringLiteral("No heading #nowhere in this document"));
+    }
+
+    // A relative link leads from where the document is saved.
+    void followsARelativeLinkFromTheDocument() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        MarkdownEditor *editor = fixture.editor;
+        const auto pointAt = [editor](int position) {
+            QTextCursor cursor(editor->document());
+            cursor.setPosition(position);
+            const QRect box = editor->cursorRect(cursor);
+            return QPoint(box.x() + 2, box.center().y());
+        };
+        UrlCatcher files(QStringLiteral("file"));
+        fixture.load(QStringLiteral("[notes](notes/today.md)"), 0);
+
+        // Unsaved, it leads nowhere yet.
+        QTest::mouseClick(editor->viewport(), Qt::LeftButton, Qt::ControlModifier, pointAt(2));
+        QVERIFY(files.opened.isEmpty());
+        QCOMPARE(fixture.backend.status(), QStringLiteral("Save the document to follow links beside it"));
+
+        fixture.backend.setFileUrl(QUrl::fromLocalFile(directory.filePath(QStringLiteral("doc.md"))));
+        QTest::mouseClick(editor->viewport(), Qt::LeftButton, Qt::ControlModifier, pointAt(2));
+        QCOMPARE(files.opened,
+                 QList<QUrl>{QUrl::fromLocalFile(directory.filePath(QStringLiteral("notes/today.md")))});
     }
 
     void showsLinkTooltipUrlAsPlainText() {
@@ -1711,15 +1845,19 @@ private slots:
         QVERIFY(Qt::mightBeRichText(destination));
         QTextDocument shown;
         shown.setHtml(MarkdownEditor::linkTooltip(destination, 2000));
-        QCOMPARE(shown.toPlainText(), destination);
+        QCOMPARE(shown.toPlainText().split(QLatin1Char('\n')).constFirst(), destination);
+        // Under it, how to follow it.
+        QCOMPARE(shown.toPlainText().split(QLatin1Char('\n')).constLast(),
+                 QStringLiteral("⌘-click to follow"));
 
         // A long one is cut in the middle to fit.
         const QString longUrl = QStringLiteral("https://example.com/") + QString(400, QLatin1Char('a'))
             + QStringLiteral("/end");
         shown.setHtml(MarkdownEditor::linkTooltip(longUrl, 300));
-        QVERIFY(shown.toPlainText().size() < longUrl.size());
-        QVERIFY(shown.toPlainText().startsWith(QStringLiteral("https://")));
-        QVERIFY(shown.toPlainText().endsWith(QStringLiteral("/end")));
+        const QString cut = shown.toPlainText().split(QLatin1Char('\n')).constFirst();
+        QVERIFY(cut.size() < longUrl.size());
+        QVERIFY(cut.startsWith(QStringLiteral("https://")));
+        QVERIFY(cut.endsWith(QStringLiteral("/end")));
     }
 
     void banksTouchpadScrollBeforeChangingTextSize() {

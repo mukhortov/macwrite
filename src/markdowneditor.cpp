@@ -286,12 +286,38 @@ QString MarkdownEditor::linkTooltip(const QString &url, int maximumWidth) {
         QFontMetrics(QToolTip::font()).elidedText(url, Qt::ElideMiddle, maximumWidth);
     // A tooltip takes text that looks like HTML for HTML, and a destination is
     // the writer's text, so it goes in escaped.
-    return Qt::convertFromPlainText(elided, Qt::WhiteSpaceNormal);
+    return Qt::convertFromPlainText(elided + QStringLiteral("\n⌘-click to follow"),
+                                    Qt::WhiteSpaceNormal);
+}
+
+// ⌘-click follows a link; a plain click puts the caret in it, to edit it.
+void MarkdownEditor::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && event->modifiers().testFlag(Qt::ControlModifier)) {
+        const QString url = linkAt(event->position().toPoint());
+        if (!url.isEmpty()) {
+            const int heading = m_backend->followLink(url);
+            if (heading >= 0)
+                showHeading(heading);
+            event->accept();
+            return;
+        }
+    }
+    QTextEdit::mousePressEvent(event);
+}
+
+void MarkdownEditor::showHeading(int position) {
+    QTextCursor cursor = textCursor();
+    cursor.setPosition(position);
+    setTextCursor(cursor);
+    QScrollBar *bar = verticalScrollBar();
+    bar->setValue(bar->value() + cursorRect().top() - 2 * fontPixelSize());
 }
 
 void MarkdownEditor::mouseMoveEvent(QMouseEvent *event) {
     QTextEdit::mouseMoveEvent(event);
     const QString url = linkAt(event->position().toPoint());
+    viewport()->setCursor(!url.isEmpty() && event->modifiers().testFlag(Qt::ControlModifier)
+                              ? Qt::PointingHandCursor : Qt::IBeamCursor);
     if (url == m_hoveredLink)
         return;
     m_hoveredLink = url;

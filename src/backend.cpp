@@ -3,6 +3,7 @@
 
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QDesktopServices>
 #include <QtConcurrentRun>
 #include <QColor>
 #include <QDir>
@@ -11,6 +12,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QHash>
 #include <QMimeData>
 #include <QPrintDialog>
 #include <QPrinter>
@@ -622,6 +624,98 @@ std::optional<EmphasisSpan> Backend::emphasisSpanAt(int position, const QString 
                             base + contentEnd, base + textEnd};
     }
     return {};
+}
+
+// A heading's text as it reads, without the markers around its markup or
+// a link's destination.
+static QString shownText(const QString &text) {
+    QList<bool> marker(text.size(), false);
+    for (const MarkdownHighlighter::InlineMarkup &item : MarkdownHighlighter::inlineMarkup(text)) {
+        for (const MarkdownHighlighter::Span &span : item.markers)
+            std::fill(marker.begin() + span.start, marker.begin() + span.start + span.length, true);
+    }
+    QString shown;
+    for (int i = 0; i < text.size(); ++i) {
+        if (!marker[i] && text[i] != QLatin1Char('`'))
+            shown += text[i];
+    }
+    return shown;
+}
+
+// GitHub's anchor for a heading: lower case, spaces as hyphens, and no
+// punctuation but hyphens and underscores.
+static QString headingSlug(const QString &shown) {
+    QString slug;
+    for (const QChar c : shown.trimmed().toLower()) {
+        if (c.isLetterOrNumber() || c.isMark() || c == QLatin1Char('-') || c == QLatin1Char('_'))
+            slug += c;
+        else if (c == QLatin1Char(' '))
+            slug += QLatin1Char('-');
+    }
+    return slug;
+}
+
+static QString lettersAndDigits(const QString &text) {
+    QString kept;
+    for (const QChar c : text) {
+        if (c.isLetterOrNumber())
+            kept += c;
+    }
+    return kept;
+}
+
+// The heading a "#fragment" link names, by GitHub's anchor, numbered from a
+// repeat's second; failing that, by the same letters and digits, as tools
+// that keep the punctuation write it. -1 when there is none.
+int Backend::headingPosition(const QString &fragment) const {
+    if (!m_document)
+        return -1;
+    const QString wanted = QUrl::fromPercentEncoding(fragment.toUtf8()).toLower();
+    if (wanted.isEmpty())
+        return 0;
+    const QString wantedLetters = lettersAndDigits(wanted);
+
+    static const QRegularExpression headingRe(
+        QStringLiteral("^#{1,6}[ \\t]+(.*?)(?:[ \\t]+#+)?[ \\t]*$"));
+    QHash<QString, int> seen;
+    int sameLetters = -1;
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        const QString line = block.text();
+        if (!line.startsWith(QLatin1Char('#')) || MarkdownHighlighter::isFencedCode(block))
+            continue;
+        const QRegularExpressionMatch match = headingRe.match(line);
+        if (!match.hasMatch())
+            continue;
+        const QString shown = shownText(match.captured(1));
+        const QString slug = headingSlug(shown);
+        const int repeat = seen[slug]++;
+        if ((repeat ? slug + QLatin1Char('-') + QString::number(repeat) : slug) == wanted)
+            return block.position();
+        if (sameLetters < 0 && !wantedLetters.isEmpty() && lettersAndDigits(shown.toLower()) == wantedLetters)
+            sameLetters = block.position();
+    }
+    return sameLetters;
+}
+
+// A link leads to a heading here, which the caller shows, or to a page or a
+// file beside the document, which the system opens.
+int Backend::followLink(const QString &destination) {
+    if (destination.startsWith(QLatin1Char('#'))) {
+        const int position = headingPosition(destination.mid(1));
+        if (position < 0)
+            setStatus(QStringLiteral("No heading %1 in this document").arg(destination));
+        return position;
+    }
+    QUrl url(destination);
+    if (url.isRelative()) {
+        if (!m_fileUrl.isValid()) {
+            setStatus(QStringLiteral("Save the document to follow links beside it"));
+            return -1;
+        }
+        url = m_fileUrl.resolved(url);
+    }
+    QDesktopServices::openUrl(url);
+    return -1;
 }
 
 QString Backend::linkUrlAt(int position) const {
