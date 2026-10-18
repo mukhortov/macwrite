@@ -2266,7 +2266,14 @@ private slots:
         QCOMPARE(fixture.backend.textScale(), 1.25);
         QTest::keyClick(fixture.editor(), Qt::Key_Minus, Qt::ControlModifier);
         QCOMPARE(fixture.backend.textScale(), 1.1);
-        fixture.backend.resetTextSize();
+
+        // The reset key, from above 100% and from below it.
+        QTest::keyClick(fixture.editor(), Qt::Key_0, Qt::ControlModifier);
+        QCOMPARE(fixture.backend.textScale(), 1.0);
+        QTest::keyClick(fixture.editor(), Qt::Key_Minus, Qt::ControlModifier);
+        QCOMPARE(fixture.backend.textScale(), 0.9);
+        QTest::keyClick(fixture.editor(), Qt::Key_0, Qt::ControlModifier);
+        QCOMPARE(fixture.backend.textScale(), 1.0);
     }
 
     void titlesTheWindowAfterItsFile() {
@@ -4045,14 +4052,22 @@ private slots:
         // The ends of the ladder hold instead of running away.
         for (int step = 0; step < 8; ++step)
             backend.decreaseTextSize();
-        QCOMPARE(backend.textScale(), 0.67);
+        QCOMPARE(backend.textScale(), 0.5);
         const int settledCount = textScaleSpy.count();
         backend.decreaseTextSize();
         QCOMPARE(textScaleSpy.count(), settledCount);
 
         // A new window picks the size back up.
         Backend reopened;
-        QCOMPARE(reopened.textScale(), 0.67);
+        QCOMPARE(reopened.textScale(), 0.5);
+
+        for (int step = 0; step < 20; ++step)
+            backend.increaseTextSize();
+        QCOMPARE(backend.textScale(), 3.0);
+        QCOMPARE(Backend().textScale(), 3.0);
+        const int maximumCount = textScaleSpy.count();
+        backend.increaseTextSize();
+        QCOMPARE(textScaleSpy.count(), maximumCount);
 
         backend.resetTextSize();
         QCOMPARE(backend.textScale(), 1.0);

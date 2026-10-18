@@ -69,7 +69,7 @@ is never auto-saved over its file — save it to keep it.
 The font button in the footer picks the writing font from any installed text font,
 and Write remembers the choice. IBM Plex Mono is the default.
 
-The text size runs from 67% to 200% in browser-sized steps. Like the font, it is
+The text size runs from 50% to 300% in browser-sized steps. Like the font, it is
 one setting for every window, and is remembered for the next launch.
 
 A new window opens a step down and to the right of the front window. The last
