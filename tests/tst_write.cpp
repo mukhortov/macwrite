@@ -480,11 +480,9 @@ private slots:
         Backend backend;
         QScopedPointer<QObject> editor(makeEditor(backend));
         QVERIFY(editor);
-        editor->setProperty("width", 600);
+        qobject_cast<QWidget *>(editor.data())->resize(600, 400);
         backend.open(QUrl::fromLocalFile(path));
-        auto *quickDocument = qobject_cast<QQuickTextDocument *>(
-            editor->property("textDocument").value<QObject *>());
-        QTextDocument *document = quickDocument->textDocument();
+        QTextDocument *document = qobject_cast<QTextEdit *>(editor.data())->document();
         const qreal height = document->documentLayout()->documentSize().height();
         const auto codeBackground = [document]() {
             for (const QTextLayout::FormatRange &range : document->lastBlock().previous().layout()->formats()) {
@@ -2964,7 +2962,7 @@ private slots:
         QScopedPointer<QObject> editor(makeEditor(backend));
         QVERIFY(editor);
         const QString text = QStringLiteral("\nfirst\n\n  - item\nlast");
-        editor->setProperty("text", text);
+        editor->setProperty("plainText", text);
 
         // The same answers the editor's text gave, at every position.
         for (int position = 0; position <= text.size(); ++position) {
@@ -3297,19 +3295,11 @@ private slots:
 
     void keepsCaretRangesConsistentWithCode() {
         Backend backend;
-        QQmlEngine engine;
-        QQmlComponent component(&engine);
-        component.setData("import QtQuick\nTextEdit {}", QUrl());
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> editor(component.create());
-        QVERIFY2(editor, qPrintable(component.errorString()));
-        auto *quickDocument = editor->property("textDocument").value<QQuickTextDocument *>();
-        QVERIFY(quickDocument);
-        backend.attachQuickDocument(quickDocument);
-        auto *document = quickDocument->textDocument();
+        QScopedPointer<QObject> editor(makeEditor(backend));
+        auto *document = qobject_cast<QTextEdit *>(editor.data())->document();
         auto *highlighter = document->findChild<MarkdownHighlighter *>();
         QVERIFY(highlighter);
-        editor->setProperty("text", QStringLiteral("``` **opening**\n"
+        editor->setProperty("plainText", QStringLiteral("``` **opening**\n"
                                                    "# _literal_ [link](url)\n"
                                                    "```  \n"
                                                    "*prose*\n"
@@ -3610,21 +3600,9 @@ private slots:
     }
 
     void copiesRenderedHtml() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        editor->setProperty("text", QStringLiteral("# Title\n\nFirst **bold**.\n\nSecond."));
-        backend.copyAsHtml();
+        WindowFixture fixture;
+        fixture.load(QStringLiteral("# Title\n\nFirst **bold**.\n\nSecond."));
+        QVERIFY(fixture.choose(QStringLiteral("Copy as HTML")));
 
         const QMimeData *mimeData = QGuiApplication::clipboard()->mimeData();
         QVERIFY(mimeData);
@@ -3777,8 +3755,7 @@ private slots:
         // Give the document a home on disk, then edit it without saving again.
         backend.saveAs(QUrl::fromLocalFile(path));
         QSignalSpy savedSpy(&backend, &Backend::saveSucceeded);
-        editor->setProperty("text", QStringLiteral("auto-saved body"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("auto-saved body"));
 
         // The debounced timer should flush to disk with no manual save.
         QTRY_VERIFY(savedSpy.count() >= 1);
@@ -3797,8 +3774,7 @@ private slots:
 
         QSignalSpy savedSpy(&backend, &Backend::saveSucceeded);
         QSignalSpy saveDialogSpy(&backend, &Backend::saveDialogRequested);
-        editor->setProperty("text", QStringLiteral("nameless draft"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("nameless draft"));
 
         // Wait past the auto-save debounce: an untitled draft must never auto-save
         // or silently raise the save picker. Crash recovery still covers it.
@@ -3822,14 +3798,12 @@ private slots:
         QSignalSpy externalChangeSpy(&backend, &Backend::externalChangeDetected);
 
         // Another program writes while our auto-save is pending.
-        editor->setProperty("text", QStringLiteral("mine"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("mine"));
         writeFile(path, "theirs");
 
         // Their version survives the debounce, and further typing.
         QTRY_VERIFY(externalChangeSpy.count() >= 1);
-        editor->setProperty("text", QStringLiteral("mine, still typing"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("mine, still typing"));
         QTest::qWait(1200);
         QCOMPARE(readFile(path), QByteArray("theirs"));
         QVERIFY(backend.modified());
@@ -3853,8 +3827,7 @@ private slots:
 
         // Change the file without the watcher seeing it, then let auto-save run.
         writeFileUnwatched(backend, path, "theirs");
-        editor->setProperty("text", QStringLiteral("mine"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("mine"));
 
         QTRY_VERIFY(externalChangeSpy.count() >= 1);
         QTest::qWait(700);
@@ -3878,16 +3851,14 @@ private slots:
         QTRY_VERIFY(externalChangeSpy.count() >= 1);
 
         // The prompt is dismissed (Escape): neither reload nor keep is chosen.
-        editor->setProperty("text", QStringLiteral("mine"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("mine"));
         QTest::qWait(1200);
         QCOMPARE(readFile(path), QByteArray("theirs"));
 
         backend.save();
         QCOMPARE(readFile(path), QByteArray("mine"));
 
-        editor->setProperty("text", QStringLiteral("mine, auto-saved again"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("mine, auto-saved again"));
         QTRY_COMPARE(readFile(path), QByteArray("mine, auto-saved again"));
     }
 
@@ -3905,10 +3876,9 @@ private slots:
         writeFile(path, "theirs");
         QTRY_VERIFY(externalChangeSpy.count() >= 1);
         backend.reloadFromDisk();
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("theirs"));
+        QCOMPARE(editor->property("plainText").toString(), QStringLiteral("theirs"));
 
-        editor->setProperty("text", QStringLiteral("theirs, edited"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("theirs, edited"));
         QTRY_COMPARE(readFile(path), QByteArray("theirs, edited"));
     }
 
@@ -3929,8 +3899,7 @@ private slots:
             backend.open(QUrl::fromLocalFile(path));
             QVERIFY(backend.status().contains(QStringLiteral("Auto-save is off")));
 
-            editor->setProperty("text", QStringLiteral("changed\n"));
-            QVERIFY(backend.editorTextChanged());
+            editor->setProperty("plainText", QStringLiteral("changed\n"));
             QVERIFY(!backend.m_autoSaveTimer.isActive());
             QTest::qWait(700);
             QCOMPARE(readFile(path), original);
@@ -3962,8 +3931,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(path));
 
         // Typing does not auto-save the file into existence.
-        editor->setProperty("text", QStringLiteral("first words"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("first words"));
         QVERIFY(backend.modified());
         QTest::qWait(800);
         QVERIFY(!QFileInfo::exists(path));
@@ -3976,8 +3944,7 @@ private slots:
         QVERIFY(!backend.modified());
 
         // From then on it is an ordinary file, auto-saved like any other.
-        editor->setProperty("text", QStringLiteral("more words"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("more words"));
         QTRY_COMPARE(readFile(path), QByteArray("more words"));
         QCOMPARE(externalSpy.count(), 0);
     }
@@ -4023,13 +3990,12 @@ private slots:
         QScopedPointer<QObject> editor(makeEditor(backend));
         QVERIFY(editor);
         // As after restoring a draft: the window holds unsaved text.
-        editor->setProperty("text", QStringLiteral("recovered"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("recovered"));
 
         backend.openOrStartFile(QUrl::fromLocalFile(path));
         QCOMPARE(backend.status(),
                  QStringLiteral("Recovered unsaved changes; asked.md was not opened."));
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("recovered"));
+        QCOMPARE(editor->property("plainText").toString(), QStringLiteral("recovered"));
         backend.discardRecovery();
     }
 
@@ -4044,8 +4010,7 @@ private slots:
         QScopedPointer<QObject> editor(makeEditor(backend));
         QVERIFY(editor);
         backend.open(QUrl::fromLocalFile(path));
-        editor->setProperty("text", QStringLiteral("after"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("after"));
         backend.save();
         QFile::setPermissions(directory.path(),
                               QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
@@ -4098,7 +4063,7 @@ private slots:
         QScopedPointer<QObject> editor(makeEditor(backend));
         QVERIFY(editor);
         backend.openOrStartFile(QUrl::fromLocalFile(path));
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("already here"));
+        QCOMPARE(editor->property("plainText").toString(), QStringLiteral("already here"));
         QCOMPARE(backend.status(), QStringLiteral("Opened notes.md"));
     }
 
@@ -4110,14 +4075,12 @@ private slots:
         Backend backend;
         QScopedPointer<QObject> editor(makeEditor(backend));
         QVERIFY(editor);
-        editor->setProperty("text", QStringLiteral("original"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("original"));
         backend.saveAs(QUrl::fromLocalFile(path));
 
         // The writer edits, then picks Discard to open a file that fails.
         backend.holdAutoSave(true);
-        editor->setProperty("text", QStringLiteral("changes to throw away"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("changes to throw away"));
         backend.discardRecovery();
         backend.open(QUrl::fromLocalFile(directory.filePath(QStringLiteral("missing.md"))));
         backend.holdAutoSave(false);
@@ -4134,21 +4097,18 @@ private slots:
         Backend backend;
         QScopedPointer<QObject> editor(makeEditor(backend));
         QVERIFY(editor);
-        editor->setProperty("text", QStringLiteral("original"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("original"));
         backend.saveAs(QUrl::fromLocalFile(path));
 
         // The file changes without the watcher noticing; the pre-save check
         // catches it.
         QSignalSpy externalSpy(&backend, &Backend::externalChangeDetected);
         writeFileUnwatched(backend, path, "theirs");
-        editor->setProperty("text", QStringLiteral("mine"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("mine"));
         QTRY_VERIFY(externalSpy.count() >= 1);
 
         // Undoing back to the old text is not a return to what is on disk.
-        editor->setProperty("text", QStringLiteral("original"));
-        QVERIFY(backend.editorTextChanged());
+        editor->setProperty("plainText", QStringLiteral("original"));
         QVERIFY(backend.modified());
         backend.discardRecovery();
     }
@@ -4165,9 +4125,8 @@ private slots:
             QScopedPointer<QObject> editor(makeEditor(crashed));
             QVERIFY(editor);
             crashed.saveAs(url);
-            editor->setProperty("text", QStringLiteral("draft"));
+            editor->setProperty("plainText", QStringLiteral("draft"));
             crashed.m_autoSaveSuspended = true; // stand in for a crash before auto-save
-            QVERIFY(crashed.editorTextChanged());
             QTest::qWait(1000);
         }
         QCOMPARE(readFile(path), QByteArray());
@@ -4185,9 +4144,8 @@ private slots:
                 continue;
             }
 
-            QCOMPARE(editor->property("text").toString(), QStringLiteral("draft"));
-            editor->setProperty("text", QStringLiteral("draft, edited"));
-            QVERIFY(restored.editorTextChanged());
+            QCOMPARE(editor->property("plainText").toString(), QStringLiteral("draft"));
+            editor->setProperty("plainText", QStringLiteral("draft, edited"));
             QTest::qWait(1200);
             QCOMPARE(readFile(path), QByteArray("newer on disk"));
             QVERIFY(restored.modified());
@@ -4201,17 +4159,15 @@ private slots:
 
     void revertsEmptyDocumentToCleanState() {
         Backend backend;
-        QQuickTextDocument *quickDocument = attachTextEdit(&backend);
-        QVERIFY(quickDocument);
+        QTextDocument *document = attachTextEdit(&backend);
+        QVERIFY(document);
 
         QVERIFY(!backend.modified());
 
-        quickDocument->textDocument()->setPlainText(QStringLiteral("hello"));
-        QVERIFY(backend.editorTextChanged());
+        document->setPlainText(QStringLiteral("hello"));
         QVERIFY(backend.modified());
 
-        quickDocument->textDocument()->setPlainText(QString());
-        QVERIFY(backend.editorTextChanged());
+        document->setPlainText(QString());
         QVERIFY(!backend.modified());
     }
 
@@ -4226,18 +4182,16 @@ private slots:
         file.close();
 
         Backend backend;
-        QQuickTextDocument *quickDocument = attachTextEdit(&backend);
-        QVERIFY(quickDocument);
+        QTextDocument *document = attachTextEdit(&backend);
+        QVERIFY(document);
 
         backend.open(QUrl::fromLocalFile(path));
         QVERIFY(!backend.modified());
 
-        quickDocument->textDocument()->setPlainText(QStringLiteral("hello world"));
-        QVERIFY(backend.editorTextChanged());
+        document->setPlainText(QStringLiteral("hello world"));
         QVERIFY(backend.modified());
 
-        quickDocument->textDocument()->setPlainText(QStringLiteral("hello"));
-        QVERIFY(backend.editorTextChanged());
+        document->setPlainText(QStringLiteral("hello"));
         QVERIFY(!backend.modified());
     }
 
@@ -4252,8 +4206,8 @@ private slots:
         file.close();
 
         Backend backend;
-        QQuickTextDocument *quickDocument = attachTextEdit(&backend);
-        QVERIFY(quickDocument);
+        QTextDocument *document = attachTextEdit(&backend);
+        QVERIFY(document);
 
         QSignalSpy externalChangeSpy(&backend, &Backend::externalChangeDetected);
         backend.open(QUrl::fromLocalFile(path));
@@ -4264,16 +4218,13 @@ private slots:
 
         // The writer can dismiss the dialog without picking a version, so the
         // text the deleted file used to hold is not a saved state to return to.
-        quickDocument->textDocument()->setPlainText(QStringLiteral("hello world"));
-        QVERIFY(backend.editorTextChanged());
-        quickDocument->textDocument()->setPlainText(QStringLiteral("hello"));
-        QVERIFY(backend.editorTextChanged());
+        document->setPlainText(QStringLiteral("hello world"));
+        document->setPlainText(QStringLiteral("hello"));
         QVERIFY(backend.modified());
 
         // Nor is emptying it: an empty document only reads as clean while there
         // is no file behind it.
-        quickDocument->textDocument()->setPlainText(QString());
-        QVERIFY(backend.editorTextChanged());
+        document->setPlainText(QString());
         QVERIFY(backend.modified());
     }
 
@@ -4297,21 +4248,10 @@ private:
         return formats;
     }
 
-    // Builds a minimal TextEdit and attaches its document to the backend, so
-    // editorTextChanged() sees real edits. The engine outlives the returned
-    // editor because it is a data member.
-    QObject *makeEditor(Backend &backend) {
-        QQmlComponent component(&m_engine);
-        component.setData(
-            "import QtQuick\nTextEdit { property var doc: textDocument }", QUrl());
-        if (!component.isReady()) {
-            qWarning() << component.errorString();
-            return nullptr;
-        }
-        QObject *editor = component.create();
-        if (editor)
-            backend.attachQuickDocument(editor->property("doc").value<QObject *>());
-        return editor;
+    // An editor on the backend's document, its text as the plainText property.
+    // It tells the backend of each edit, as Write's own does.
+    static MarkdownEditor *makeEditor(Backend &backend) {
+        return new MarkdownEditor(&backend);
     }
 
     static void writeFile(const QString &path, const QByteArray &contents) {
@@ -4337,28 +4277,11 @@ private:
     // Loads a bare TextEdit, attaches its document to the backend, and returns
     // the QQuickTextDocument. The engine and TextEdit are parented to the
     // backend so they outlive the helper call.
-    QQuickTextDocument *attachTextEdit(Backend *backend) {
-        auto *engine = new QQmlEngine(backend);
-        auto *component = new QQmlComponent(engine);
-        component->setData(R"QML(
-            import QtQuick
-            TextEdit { }
-        )QML", QUrl::fromLocalFile(QStringLiteral("Harness.qml")));
-        if (!component->isReady())
-            return nullptr;
-
-        QObject *editor = component->create();
-        if (!editor)
-            return nullptr;
-        editor->setParent(backend);
-
-        auto *quickDocument = qobject_cast<QQuickTextDocument *>(
-            editor->property("textDocument").value<QObject *>());
-        if (!quickDocument)
-            return nullptr;
-
-        backend->attachQuickDocument(quickDocument);
-        return quickDocument;
+    // The document of an editor that goes with the backend.
+    static QTextDocument *attachTextEdit(Backend *backend) {
+        auto *editor = new MarkdownEditor(backend);
+        QObject::connect(backend, &QObject::destroyed, editor, &QObject::deleteLater);
+        return editor->document();
     }
 
     QQmlEngine m_engine;
