@@ -37,6 +37,8 @@ public:
 
 signals:
     void activated();
+    // The writer closed the window, and it is about to go.
+    void closed();
     // A close the writer was asked about is off, and with it any quit that
     // was waiting on this window.
     void closeCancelled();

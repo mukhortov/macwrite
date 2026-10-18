@@ -3,17 +3,14 @@
 #include <QList>
 #include <QObject>
 #include <QPointer>
-#include <QQmlComponent>
 #include <QUrl>
-#include <QVariantMap>
 
 #include <memory>
 
 class Backend;
+class MainWindow;
 class QMenuBar;
-class QQmlContext;
-class QQmlEngine;
-class QQuickWindow;
+struct WindowGeometry;
 
 // Runs every Write window in this one process. Each window has a Backend of
 // its own, with its document, file watcher, auto-save, and recovery slot,
@@ -22,16 +19,16 @@ class WindowManager : public QObject {
     Q_OBJECT
 
 public:
-    WindowManager(QQmlEngine *engine, const QUrl &mainQml, QObject *parent = nullptr);
+    explicit WindowManager(QObject *parent = nullptr);
     ~WindowManager() override;
 
     // The windows still open, the most recently active first.
-    QList<QQuickWindow *> windows() const;
-    QQuickWindow *activeWindow() const;
+    QList<MainWindow *> windows() const;
+    MainWindow *activeWindow() const;
     Backend *activeBackend() const;
-    Backend *backendFor(const QQuickWindow *window) const;
+    Backend *backendFor(const MainWindow *window) const;
 
-    QQuickWindow *newWindow();
+    MainWindow *newWindow();
     // The first windows at launch: one for each draft a crash left behind, or
     // a blank one.
     void openStartupWindows();
@@ -53,38 +50,32 @@ signals:
     void textScaleChanged(qreal textScale);
     void windowCountChanged();
 
-private slots:
-    void closeCancelled();
-
 private:
     friend class WriteTest;
 
     // A window stays listed after it closes, until it is gone, so the manager
     // can still take it down along with its backend.
     struct Window {
-        QPointer<QQuickWindow> window;
+        QPointer<MainWindow> window;
         Backend *backend = nullptr;
-        QQmlContext *context = nullptr;
         bool open = true;
     };
 
     void buildNoWindowMenuBar();
     // Needs a window open to step from.
-    QVariantMap cascadedGeometry() const;
-    void windowActivated(QQuickWindow *window);
-    void windowClosed(QQuickWindow *window);
+    WindowGeometry cascadedGeometry() const;
+    void windowActivated(MainWindow *window);
+    void windowClosed(MainWindow *window);
     void windowDestroyed(Backend *backend);
     void shareTextScale(Backend *source);
     void shareEditorFont(Backend *source);
-    int indexOf(const QQuickWindow *window) const;
+    int indexOf(const MainWindow *window) const;
 
-    QQmlEngine *m_engine;
-    QQmlComponent m_component;
     QList<Window> m_windows;
     bool m_darkMode = true;
     qreal m_textScale = 1.0;
     // The window whose unsaved changes a quit is waiting on.
-    QPointer<QQuickWindow> m_quitWaitingOn;
+    QPointer<MainWindow> m_quitWaitingOn;
     // What macOS shows at the top of the screen once every window has closed.
     std::unique_ptr<QMenuBar> m_noWindowMenuBar;
 };

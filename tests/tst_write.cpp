@@ -2492,6 +2492,404 @@ private slots:
         QTRY_VERIFY(fixture.window.commandsEnabled());
     }
 
+    void runsEveryWindowInOneProcess() {
+        WindowManager windows;
+        MainWindow *first = windows.newWindow();
+        QVERIFY(first);
+        QVERIFY(QTest::qWaitForWindowExposed(first));
+        QSignalSpy countSpy(&windows, &WindowManager::windowCountChanged);
+
+        // Cmd+N opens the next window here rather than in a process of its own.
+        QTest::keyClick(first, Qt::Key_N, Qt::ControlModifier);
+        QCOMPARE(windows.windows().size(), 2);
+        QCOMPARE(countSpy.count(), 1);
+        MainWindow *second = windows.windows().constFirst();
+        QVERIFY(second != first);
+        QCOMPARE(windows.activeWindow(), second);
+
+        // Each window has a document, file watcher, auto-save, and draft of
+        // its own.
+        Backend *firstBackend = windows.backendFor(first);
+        Backend *secondBackend = windows.backendFor(second);
+        QVERIFY(firstBackend && secondBackend && firstBackend != secondBackend);
+        QVERIFY(!firstBackend->m_recoveryPath.isEmpty());
+        QVERIFY(!secondBackend->m_recoveryPath.isEmpty());
+        QVERIFY(firstBackend->m_recoveryPath != secondBackend->m_recoveryPath);
+        first->editor()->setPlainText(QStringLiteral("only here"));
+        QVERIFY(firstBackend->modified());
+        QVERIFY(!secondBackend->modified());
+        QCOMPARE(second->editor()->toPlainText(), QString());
+
+        // A closed window takes its backend with it, and with it the lock
+        // on its draft.
+        const QString secondDraftLock = secondBackend->m_recoveryLock->fileName();
+        QPointer<Backend> closedBackend(secondBackend);
+        QVERIFY(second->close());
+        QCOMPARE(windows.windows(), QList<MainWindow *>{first});
+        QCOMPARE(countSpy.count(), 2);
+        QTRY_VERIFY(!closedBackend);
+        QVERIFY(!QFileInfo::exists(secondDraftLock));
+        firstBackend->discardRecovery();
+    }
+
+    void opensAWindowFromTheMenuBarWithNoWindowOpen() {
+        WindowManager windows;
+        QAction *newWindow = nullptr;
+        for (QAction *action : windows.m_noWindowMenuBar->findChildren<QAction *>()) {
+            if (action->text() == QStringLiteral("New Window"))
+                newWindow = action;
+        }
+        QVERIFY(newWindow);
+        QCOMPARE(newWindow->shortcut(), QKeySequence(QStringLiteral("Ctrl+N")));
+
+        // With every window closed, Cmd+N reaches the menu bar macOS shows then.
+        QVERIFY(newWindow->isEnabled());
+        newWindow->trigger();
+        QCOMPARE(windows.windows().size(), 1);
+        MainWindow *window = windows.windows().constFirst();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+
+        // While a window is open its own menu has the key, so this one stands
+        // aside rather than make Cmd+N ambiguous.
+        QVERIFY(!newWindow->isEnabled());
+        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
+        QCOMPARE(windows.windows().size(), 2);
+
+        for (MainWindow *open : windows.windows())
+            QVERIFY(open->close());
+        QVERIFY(windows.windows().isEmpty());
+        QVERIFY(newWindow->isEnabled());
+        newWindow->trigger();
+        QCOMPARE(windows.windows().size(), 1);
+    }
+
+    void cascadesNewWindowsAndRemembersTheLastToClose() {
+        const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
+        WindowManager windows;
+        MainWindow *first = windows.newWindow();
+        QVERIFY(first);
+        QVERIFY(QTest::qWaitForWindowExposed(first));
+        const QRect firstPlace(available.topLeft() + QPoint(10, 40), first->minimumSize());
+        first->setGeometry(firstPlace);
+
+        // A new window steps down and to the right of the front one, at its
+        // size, so it never lands squarely on top of it.
+        MainWindow *second = windows.newWindow();
+        QVERIFY(second);
+        QCOMPARE(second->geometry(), firstPlace.translated(22, 22));
+
+        // Stepping from the front window again passes over the one already
+        // there.
+        first->activateWindow();
+        QTRY_COMPARE(windows.activeWindow(), first);
+        MainWindow *stepped = windows.newWindow();
+        QVERIFY(stepped);
+        QCOMPARE(stepped->geometry(), firstPlace.translated(44, 44));
+
+        // One that would run off the screen starts again from its top left.
+        stepped->activateWindow();
+        QTRY_COMPARE(windows.activeWindow(), stepped);
+        stepped->setGeometry(QRect(available.bottomRight() - QPoint(first->minimumWidth(),
+                                                                     first->minimumHeight()),
+                                   first->minimumSize()));
+        MainWindow *third = windows.newWindow();
+        QVERIFY(third);
+        const QMargins frame = stepped->windowHandle()->frameMargins();
+        QCOMPARE(third->geometry().topLeft(), available.topLeft() + QPoint(frame.left(), frame.top()));
+
+        // Only the last window to close says where the next launch opens.
+        QSettings().remove(QStringLiteral("window"));
+        QVERIFY(third->close());
+        QVERIFY(stepped->close());
+        QVERIFY(second->close());
+        QVERIFY(!QSettings().contains(QStringLiteral("window/x")));
+        first->setGeometry(firstPlace.translated(5, 7));
+        QVERIFY(first->close());
+        QCOMPARE(QSettings().value(QStringLiteral("window/x")).toInt(), firstPlace.x() + 5);
+        QCOMPARE(QSettings().value(QStringLiteral("window/y")).toInt(), firstPlace.y() + 7);
+        QCOMPARE(QSettings().value(QStringLiteral("window/width")).toInt(), firstPlace.width());
+
+        MainWindow *reopened = windows.newWindow();
+        QVERIFY(reopened);
+        QCOMPARE(reopened->geometry(), firstPlace.translated(5, 7));
+        QSettings().remove(QStringLiteral("window"));
+    }
+
+    void sharesTextSizeAndFontAcrossWindows() {
+        WindowManager windows;
+        MainWindow *first = windows.newWindow();
+        MainWindow *second = windows.newWindow();
+        QVERIFY(first && second);
+        Backend *firstBackend = windows.backendFor(first);
+        Backend *secondBackend = windows.backendFor(second);
+        QSignalSpy scaleSpy(&windows, &WindowManager::textScaleChanged);
+
+        // The text size is one size for every window. Only the window it was
+        // changed in says so.
+        firstBackend->increaseTextSize();
+        QCOMPARE(firstBackend->textScale(), 1.1);
+        QCOMPARE(secondBackend->textScale(), 1.1);
+        QCOMPARE(windows.textScale(), 1.1);
+        QCOMPARE(scaleSpy.count(), 1);
+        QCOMPARE(scaleSpy.constFirst().constFirst().toReal(), 1.1);
+        QCOMPARE(firstBackend->status(), QStringLiteral("Text size 110%"));
+        QCOMPARE(secondBackend->status(), QString());
+        QCOMPARE(second->editor()->fontPixelSize(), 22);
+        QCOMPARE(windows.backendFor(windows.newWindow())->textScale(), 1.1);
+
+        secondBackend->setEditorFont(QStringLiteral("Menlo"));
+        QCOMPARE(firstBackend->editorFont(), QStringLiteral("Menlo"));
+        QCOMPARE(first->editor()->font().family(), QStringLiteral("Menlo"));
+
+        secondBackend->resetTextSize();
+        QCOMPARE(firstBackend->textScale(), 1.0);
+        secondBackend->setEditorFont(Backend::defaultEditorFont());
+        QSettings().remove(QStringLiteral("editor/font"));
+        QSettings().remove(QStringLiteral("text/zoom"));
+    }
+
+    void routesFilesOpenedFromFinder() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString first = directory.filePath(QStringLiteral("first.md"));
+        const QString second = directory.filePath(QStringLiteral("second.md"));
+        const QString third = directory.filePath(QStringLiteral("third.md"));
+        writeFile(first, "first");
+        writeFile(second, "second");
+        writeFile(third, "third");
+
+        WindowManager windows;
+        AppEventFilter appEvents(&windows);
+        QCoreApplication::instance()->installEventFilter(&appEvents);
+        const auto openFromFinder = [](const QString &path) {
+            QFileOpenEvent event(QUrl::fromLocalFile(path));
+            QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
+        };
+
+        // The blank window Write opened with takes the first file.
+        MainWindow *blank = windows.newWindow();
+        QVERIFY(blank);
+        openFromFinder(first);
+        QCOMPARE(windows.windows().size(), 1);
+        QCOMPARE(windows.backendFor(blank)->fileUrl(), QUrl::fromLocalFile(first));
+
+        // A window with a document keeps it, and the next file gets a window
+        // of its own.
+        openFromFinder(second);
+        QCOMPARE(windows.windows().size(), 2);
+        MainWindow *secondWindow = windows.windows().constFirst();
+        QCOMPARE(windows.backendFor(secondWindow)->fileUrl(), QUrl::fromLocalFile(second));
+        QCOMPARE(windows.backendFor(blank)->fileUrl(), QUrl::fromLocalFile(first));
+
+        // A file that is already open comes forward rather than opening twice,
+        // under whatever name it was opened by.
+        openFromFinder(directory.filePath(QStringLiteral("./first.md")));
+        QCOMPARE(windows.windows().size(), 2);
+        QTRY_COMPARE(windows.activeWindow(), blank);
+
+        // An untitled window with writing in it is not blank, but an untouched
+        // window behind the front one still is.
+        MainWindow *untouched = windows.newWindow();
+        MainWindow *written = windows.newWindow();
+        QVERIFY(untouched && written);
+        written->editor()->setPlainText(QStringLiteral("draft"));
+        QVERIFY(windows.backendFor(written)->modified());
+        openFromFinder(third);
+        QCOMPARE(windows.windows().size(), 4);
+        QCOMPARE(windows.backendFor(untouched)->fileUrl(), QUrl::fromLocalFile(third));
+        QVERIFY(windows.backendFor(written)->fileUrl().isEmpty());
+        windows.backendFor(written)->discardRecovery();
+    }
+
+    void reopensAWindowFromTheDock() {
+        WindowManager windows;
+        AppEventFilter appEvents(&windows);
+        QCoreApplication::instance()->installEventFilter(&appEvents);
+        const auto send = [](QEvent::Type type) {
+            QEvent event(type);
+            QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
+        };
+        // macOS activates Write, if it was not already, and then Qt
+        // reports the click as one more activation.
+        const auto clickDockIcon = [&send] {
+            send(QEvent::ApplicationActivate);
+            send(QEvent::ApplicationActivate);
+        };
+        const auto switchFromAnotherApp = [&send] {
+            send(QEvent::ApplicationDeactivate);
+            send(QEvent::ApplicationActivate);
+        };
+
+        MainWindow *window = windows.newWindow();
+        QVERIFY(window);
+        clickDockIcon();
+        QCOMPARE(windows.windows().size(), 1);
+
+        // Closing the last window leaves Write running. Switching to it
+        // shows no window, as in other Mac apps, but the Dock icon brings
+        // one back, whether Write was in front or not.
+        QVERIFY(window->close());
+        QVERIFY(windows.windows().isEmpty());
+        switchFromAnotherApp();
+        QVERIFY(windows.windows().isEmpty());
+        send(QEvent::ApplicationActivate);
+        QCOMPARE(windows.windows().size(), 1);
+
+        QVERIFY(windows.activeWindow()->close());
+        send(QEvent::ApplicationDeactivate);
+        clickDockIcon();
+        QCOMPARE(windows.windows().size(), 1);
+    }
+
+    void quitsOnlyOnceEveryWindowAgrees() {
+        WindowManager windows;
+        QuitRecorder quits;
+        QCoreApplication::instance()->installEventFilter(&quits);
+        AppEventFilter appEvents(&windows);
+        QCoreApplication::instance()->installEventFilter(&appEvents);
+        const auto quit = [] {
+            QEvent event(QEvent::Quit);
+            QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
+            return event.isAccepted();
+        };
+        const auto asking = [](MainWindow *window) {
+            return sheet(window, QStringLiteral("unsavedChangesSheet"));
+        };
+
+        MainWindow *back = windows.newWindow();
+        MainWindow *clean = windows.newWindow();
+        MainWindow *front = windows.newWindow();
+        QVERIFY(back && clean && front);
+        back->editor()->setPlainText(QStringLiteral("unsaved"));
+        front->editor()->setPlainText(QStringLiteral("unsaved"));
+
+        // The front window asks first, and no window closes while one waits.
+        QVERIFY(!quit());
+        QTRY_VERIFY(asking(front));
+        QVERIFY(!asking(back));
+        QCOMPARE(windows.windows().size(), 3);
+
+        // Cancelling that question cancels the quit, and every window stays.
+        asking(front)->button(QMessageBox::Cancel)->click();
+        QTRY_VERIFY(!asking(front));
+        QTest::qWait(50);
+        QCOMPARE(windows.windows().size(), 3);
+        QVERIFY(!asking(back));
+        QCOMPARE(quits.acceptedQuits, 0);
+
+        // Answering it carries the quit on to the next window with changes,
+        // before the clean window closes.
+        QVERIFY(!quit());
+        QTRY_VERIFY(asking(front));
+        asking(front)->button(QMessageBox::Discard)->click();
+        QTRY_VERIFY(asking(back));
+        QCOMPARE(windows.windows(), (QList<MainWindow *>{back, clean}));
+        QCOMPARE(quits.acceptedQuits, 0);
+
+        // Once the last question is answered, every window closes and the
+        // quit goes through.
+        asking(back)->button(QMessageBox::Discard)->click();
+        QTRY_COMPARE(quits.acceptedQuits, 1);
+        QVERIFY(windows.windows().isEmpty());
+    }
+
+    void restoresEveryDraftACrashLeftBehind() {
+        // Drafts of its own, apart from any another test or test run left.
+        const QString applicationName = QCoreApplication::applicationName();
+        QCoreApplication::setApplicationName(
+            QStringLiteral("tst_write-drafts-%1").arg(QCoreApplication::applicationPid()));
+        const QString stateDirectory =
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const auto restore = qScopeGuard([&] {
+            QDir(stateDirectory).removeRecursively();
+            QCoreApplication::setApplicationName(applicationName);
+        });
+        QDir().mkpath(stateDirectory);
+        QCOMPARE(Backend::unclaimedRecoveryDrafts(), 0);
+        writeFile(QDir(stateDirectory).filePath(QStringLiteral("recovery-7.json")),
+                  R"({"fileUrl":"","text":"first draft"})");
+        writeFile(QDir(stateDirectory).filePath(QStringLiteral("recovery-8.json")),
+                  R"({"fileUrl":"","text":"second draft"})");
+        QCOMPARE(Backend::unclaimedRecoveryDrafts(), 2);
+
+        WindowManager windows;
+        windows.openStartupWindows();
+        QCOMPARE(windows.windows().size(), 2);
+        QStringList texts;
+        for (MainWindow *window : windows.windows()) {
+            texts.append(window->editor()->toPlainText());
+            QVERIFY(windows.backendFor(window)->modified());
+            windows.backendFor(window)->discardRecovery();
+        }
+        texts.sort();
+        QCOMPARE(texts, QStringList({QStringLiteral("first draft"),
+                                     QStringLiteral("second draft")}));
+        QCOMPARE(Backend::unclaimedRecoveryDrafts(), 0);
+
+        // Without drafts, Write starts with one blank window.
+        WindowManager fresh;
+        fresh.openStartupWindows();
+        QCOMPARE(fresh.windows().size(), 1);
+        QVERIFY(fresh.backendFor(fresh.activeWindow())->isUntouched());
+    }
+
+    void followsTheSystemAppearance() {
+        Backend backend;
+        QCOMPARE(backend.themeBackground(), QStringLiteral("#101010"));
+        QCOMPARE(backend.themeForeground(), QStringLiteral("#eeeeee"));
+
+        // Code sits on a shade a little off the page, nowhere near the text.
+        const QColor darkPanel(backend.themeCodeBackground());
+        QVERIFY(darkPanel != QColor(backend.themeBackground()));
+        QVERIFY(darkPanel.lightness() < 60);
+
+        backend.setDarkMode(false);
+        QCOMPARE(backend.themeBackground(), QStringLiteral("#ffffff"));
+        QCOMPARE(backend.themeForeground(), QStringLiteral("#222324"));
+        QCOMPARE(backend.themeAccent(), QStringLiteral("#2077b2"));
+        const QColor lightPanel(backend.themeCodeBackground());
+        QVERIFY(lightPanel != QColor(Qt::white));
+        QVERIFY(lightPanel.lightness() > 195);
+
+        MainWindow window(&backend);
+        const QPalette colours = window.editor()->palette();
+        QCOMPARE(colours.color(QPalette::Base), QColor(backend.themeBackground()));
+        QCOMPARE(colours.color(QPalette::Text), QColor(backend.themeForeground()));
+        QCOMPARE(colours.color(QPalette::Highlight), QColor(backend.themeSelection()));
+        QCOMPARE(colours.color(QPalette::HighlightedText), QColor(backend.themeSelectionForeground()));
+
+        // A switch of the system's appearance repaints the open window too.
+        backend.setDarkMode(true);
+        QCOMPARE(window.editor()->palette().color(QPalette::Base), QColor(QStringLiteral("#101010")));
+    }
+
+    void asksAboutUnsavedChangesBeforeClosingOrQuitting() {
+        WindowManager windows;
+        MainWindow *window = windows.newWindow();
+        Backend *backend = windows.backendFor(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->editor()->setPlainText(QStringLiteral("unsaved"));
+        QVERIFY(backend->modified());
+
+        QTest::keyClick(window, Qt::Key_W, Qt::ControlModifier);
+        QTRY_VERIFY(sheet(window, QStringLiteral("unsavedChangesSheet")));
+        QVERIFY(window->isVisible());
+        sheet(window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Cancel)->click();
+        QTRY_VERIFY(!sheet(window, QStringLiteral("unsavedChangesSheet")));
+
+        // Quitting from the macOS app menu, as Cmd+Q does, sends the
+        // application a Quit event; the window must get to ask first.
+        AppEventFilter appEvents(&windows);
+        QCoreApplication::instance()->installEventFilter(&appEvents);
+        QEvent quit(QEvent::Quit);
+        QCoreApplication::sendEvent(QCoreApplication::instance(), &quit);
+        QVERIFY(!quit.isAccepted());
+        QVERIFY(window->isVisible());
+        QTRY_VERIFY(sheet(window, QStringLiteral("unsavedChangesSheet")));
+        sheet(window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Cancel)->click();
+        backend->discardRecovery();
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());
@@ -3041,42 +3439,6 @@ private slots:
         backend.setDarkMode(false);
         QCOMPARE(colorsSpy.count(), 1);
         QCOMPARE(modeSpy.count(), 1);
-    }
-
-    void followsTheSystemAppearance() {
-        Backend backend;
-        QCOMPARE(backend.themeBackground(), QStringLiteral("#101010"));
-        QCOMPARE(backend.themeForeground(), QStringLiteral("#eeeeee"));
-
-        // Code sits on a shade a little off the page, nowhere near the text.
-        const QColor darkPanel(backend.themeCodeBackground());
-        QVERIFY(darkPanel != QColor(backend.themeBackground()));
-        QVERIFY(darkPanel.lightness() < 60);
-
-        backend.setDarkMode(false);
-        QCOMPARE(backend.themeBackground(), QStringLiteral("#ffffff"));
-        QCOMPARE(backend.themeForeground(), QStringLiteral("#222324"));
-        QCOMPARE(backend.themeAccent(), QStringLiteral("#2077b2"));
-        const QColor lightPanel(backend.themeCodeBackground());
-        QVERIFY(lightPanel != QColor(Qt::white));
-        QVERIFY(lightPanel.lightness() > 195);
-
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        QCOMPARE(editor->property("selectionColor").value<QColor>(),
-                 QColor(backend.themeSelection()));
-        QCOMPARE(editor->property("selectedTextColor").value<QColor>(),
-                 QColor(backend.themeSelectionForeground()));
     }
 
     void ignoresInlineMarkdownInsideCodeSpans() {
@@ -3669,396 +4031,6 @@ private slots:
                  QStringLiteral("Recovered unsaved changes; asked.md was not opened."));
         QCOMPARE(editor->property("text").toString(), QStringLiteral("recovered"));
         backend.discardRecovery();
-    }
-
-    void asksAboutUnsavedChangesBeforeClosingOrQuitting() {
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        QQuickWindow *window = windows.newWindow();
-        QVERIFY(window);
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-        Backend *backend = windows.backendFor(window);
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *dialog = window->findChild<QObject *>(QStringLiteral("unsavedChangesDialog"));
-        QVERIFY(editor && dialog);
-        editor->setProperty("text", QStringLiteral("unsaved"));
-        QVERIFY(backend->modified());
-
-        QTest::keyClick(window, Qt::Key_W, Qt::ControlModifier);
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        QVERIFY(window->isVisible());
-        QMetaObject::invokeMethod(dialog, "reject");
-        QTRY_VERIFY(!dialog->property("opened").toBool());
-
-        // Quitting from the macOS app menu, as Cmd+Q does, sends the
-        // application a Quit event; the window must get to ask first.
-        AppEventFilter appEvents(&windows);
-        QCoreApplication::instance()->installEventFilter(&appEvents);
-        QEvent quit(QEvent::Quit);
-        QCoreApplication::sendEvent(QCoreApplication::instance(), &quit);
-        QVERIFY(!quit.isAccepted());
-        QVERIFY(window->isVisible());
-        QTRY_VERIFY(dialog->property("opened").toBool());
-        QMetaObject::invokeMethod(dialog, "reject");
-        backend->discardRecovery();
-    }
-
-    void runsEveryWindowInOneProcess() {
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        QQuickWindow *first = windows.newWindow();
-        QVERIFY(first);
-        QVERIFY(QTest::qWaitForWindowExposed(first));
-        QSignalSpy countSpy(&windows, &WindowManager::windowCountChanged);
-
-        // Cmd+N opens the next window here rather than in a process of its own.
-        QTest::keyClick(first, Qt::Key_N, Qt::ControlModifier);
-        QCOMPARE(windows.windows().size(), 2);
-        QCOMPARE(countSpy.count(), 1);
-        QQuickWindow *second = windows.windows().constFirst();
-        QVERIFY(second != first);
-        QCOMPARE(windows.activeWindow(), second);
-
-        // Each window has a document, file watcher, auto-save, and draft of
-        // its own.
-        Backend *firstBackend = windows.backendFor(first);
-        Backend *secondBackend = windows.backendFor(second);
-        QVERIFY(firstBackend && secondBackend && firstBackend != secondBackend);
-        QVERIFY(!firstBackend->m_recoveryPath.isEmpty());
-        QVERIFY(!secondBackend->m_recoveryPath.isEmpty());
-        QVERIFY(firstBackend->m_recoveryPath != secondBackend->m_recoveryPath);
-        QObject *firstEditor = first->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QObject *secondEditor = second->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        firstEditor->setProperty("text", QStringLiteral("only here"));
-        QVERIFY(firstBackend->modified());
-        QVERIFY(!secondBackend->modified());
-        QCOMPARE(secondEditor->property("text").toString(), QString());
-
-        // A closed window takes its backend with it, and with it the lock
-        // on its draft.
-        const QString secondDraftLock = secondBackend->m_recoveryLock->fileName();
-        QPointer<Backend> closedBackend(secondBackend);
-        QVERIFY(second->close());
-        QCOMPARE(windows.windows(), QList<QQuickWindow *>{first});
-        QCOMPARE(countSpy.count(), 2);
-        QTRY_VERIFY(!closedBackend);
-        QVERIFY(!QFileInfo::exists(secondDraftLock));
-        firstBackend->discardRecovery();
-    }
-
-    void opensAWindowFromTheMenuBarWithNoWindowOpen() {
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        QAction *newWindow = nullptr;
-        for (QAction *action : windows.m_noWindowMenuBar->findChildren<QAction *>()) {
-            if (action->text() == QStringLiteral("New Window"))
-                newWindow = action;
-        }
-        QVERIFY(newWindow);
-        QCOMPARE(newWindow->shortcut(), QKeySequence(QStringLiteral("Ctrl+N")));
-
-        // With every window closed, Cmd+N reaches the menu bar macOS shows then.
-        QVERIFY(newWindow->isEnabled());
-        newWindow->trigger();
-        QCOMPARE(windows.windows().size(), 1);
-        QQuickWindow *window = windows.windows().constFirst();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-
-        // While a window is open its own menu has the key, so this one stands
-        // aside rather than make Cmd+N ambiguous.
-        QVERIFY(!newWindow->isEnabled());
-        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
-        QCOMPARE(windows.windows().size(), 2);
-
-        for (QQuickWindow *open : windows.windows())
-            QVERIFY(open->close());
-        QVERIFY(windows.windows().isEmpty());
-        QVERIFY(newWindow->isEnabled());
-        newWindow->trigger();
-        QCOMPARE(windows.windows().size(), 1);
-    }
-
-    void cascadesNewWindowsAndRemembersTheLastToClose() {
-        const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        QQuickWindow *first = windows.newWindow();
-        QVERIFY(first);
-        QVERIFY(QTest::qWaitForWindowExposed(first));
-        const QRect firstPlace(available.topLeft() + QPoint(10, 10), first->minimumSize());
-        first->setGeometry(firstPlace);
-
-        // A new window steps down and to the right of the front one, at its
-        // size, so it never lands squarely on top of it.
-        QQuickWindow *second = windows.newWindow();
-        QVERIFY(second);
-        QCOMPARE(second->geometry(), firstPlace.translated(22, 22));
-
-        // Stepping from the front window again passes over the one already
-        // there.
-        first->requestActivate();
-        QTRY_COMPARE(windows.activeWindow(), first);
-        QQuickWindow *stepped = windows.newWindow();
-        QVERIFY(stepped);
-        QCOMPARE(stepped->geometry(), firstPlace.translated(44, 44));
-
-        // One that would run off the screen starts again from its top left.
-        stepped->requestActivate();
-        QTRY_COMPARE(windows.activeWindow(), stepped);
-        stepped->setGeometry(QRect(available.bottomRight() - QPoint(first->minimumWidth(),
-                                                                     first->minimumHeight()),
-                                   first->minimumSize()));
-        QQuickWindow *third = windows.newWindow();
-        QVERIFY(third);
-        const QMargins frame = stepped->frameMargins();
-        QCOMPARE(third->position(), available.topLeft() + QPoint(frame.left(), frame.top()));
-
-        // Only the last window to close says where the next launch opens.
-        QSettings().remove(QStringLiteral("window"));
-        QVERIFY(third->close());
-        QVERIFY(stepped->close());
-        QVERIFY(second->close());
-        QVERIFY(!QSettings().contains(QStringLiteral("window/x")));
-        first->setGeometry(firstPlace.translated(5, 7));
-        QVERIFY(first->close());
-        QCOMPARE(QSettings().value(QStringLiteral("window/x")).toInt(), firstPlace.x() + 5);
-        QCOMPARE(QSettings().value(QStringLiteral("window/y")).toInt(), firstPlace.y() + 7);
-        QCOMPARE(QSettings().value(QStringLiteral("window/width")).toInt(), firstPlace.width());
-
-        QQuickWindow *reopened = windows.newWindow();
-        QVERIFY(reopened);
-        QCOMPARE(reopened->geometry(), firstPlace.translated(5, 7));
-        QSettings().remove(QStringLiteral("window"));
-    }
-
-    void sharesTextSizeAndFontAcrossWindows() {
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        QQuickWindow *first = windows.newWindow();
-        QQuickWindow *second = windows.newWindow();
-        QVERIFY(first && second);
-        Backend *firstBackend = windows.backendFor(first);
-        Backend *secondBackend = windows.backendFor(second);
-        QSignalSpy scaleSpy(&windows, &WindowManager::textScaleChanged);
-
-        // The text size scales the whole interface, the dialogs' font with
-        // it, so it is one size for every window. Only the window it was
-        // changed in says so.
-        firstBackend->increaseTextSize();
-        QCOMPARE(firstBackend->textScale(), 1.1);
-        QCOMPARE(secondBackend->textScale(), 1.1);
-        QCOMPARE(windows.textScale(), 1.1);
-        QCOMPARE(scaleSpy.count(), 1);
-        QCOMPARE(scaleSpy.constFirst().constFirst().toReal(), 1.1);
-        QCOMPARE(firstBackend->status(), QStringLiteral("Text size 110%"));
-        QCOMPARE(secondBackend->status(), QString());
-        QCOMPARE(windows.backendFor(windows.newWindow())->textScale(), 1.1);
-
-        const QString installed = firstBackend->availableFonts().value(1);
-        QVERIFY(!installed.isEmpty());
-        secondBackend->setEditorFont(installed);
-        QCOMPARE(firstBackend->editorFont(), installed);
-
-        secondBackend->resetTextSize();
-        QCOMPARE(firstBackend->textScale(), 1.0);
-        secondBackend->setEditorFont(Backend::defaultEditorFont());
-        QSettings().remove(QStringLiteral("editor/font"));
-        QSettings().remove(QStringLiteral("text/zoom"));
-    }
-
-    void routesFilesOpenedFromFinder() {
-        QTemporaryDir directory;
-        QVERIFY(directory.isValid());
-        const QString first = directory.filePath(QStringLiteral("first.md"));
-        const QString second = directory.filePath(QStringLiteral("second.md"));
-        const QString third = directory.filePath(QStringLiteral("third.md"));
-        writeFile(first, "first");
-        writeFile(second, "second");
-        writeFile(third, "third");
-
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        AppEventFilter appEvents(&windows);
-        QCoreApplication::instance()->installEventFilter(&appEvents);
-        const auto openFromFinder = [](const QString &path) {
-            QFileOpenEvent event(QUrl::fromLocalFile(path));
-            QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
-        };
-
-        // The blank window Write opened with takes the first file.
-        QQuickWindow *blank = windows.newWindow();
-        QVERIFY(blank);
-        openFromFinder(first);
-        QCOMPARE(windows.windows().size(), 1);
-        QCOMPARE(windows.backendFor(blank)->fileUrl(), QUrl::fromLocalFile(first));
-
-        // A window with a document keeps it, and the next file gets a window
-        // of its own.
-        openFromFinder(second);
-        QCOMPARE(windows.windows().size(), 2);
-        QQuickWindow *secondWindow = windows.windows().constFirst();
-        QCOMPARE(windows.backendFor(secondWindow)->fileUrl(), QUrl::fromLocalFile(second));
-        QCOMPARE(windows.backendFor(blank)->fileUrl(), QUrl::fromLocalFile(first));
-
-        // A file that is already open comes forward rather than opening twice,
-        // under whatever name it was opened by.
-        openFromFinder(directory.filePath(QStringLiteral("./first.md")));
-        QCOMPARE(windows.windows().size(), 2);
-        QTRY_COMPARE(windows.activeWindow(), blank);
-
-        // An untitled window with writing in it is not blank, but an untouched
-        // window behind the front one still is.
-        QQuickWindow *untouched = windows.newWindow();
-        QQuickWindow *written = windows.newWindow();
-        QVERIFY(untouched && written);
-        written->findChild<QObject *>(QStringLiteral("sourceEditor"))
-            ->setProperty("text", QStringLiteral("draft"));
-        QVERIFY(windows.backendFor(written)->modified());
-        openFromFinder(third);
-        QCOMPARE(windows.windows().size(), 4);
-        QCOMPARE(windows.backendFor(untouched)->fileUrl(), QUrl::fromLocalFile(third));
-        QVERIFY(windows.backendFor(written)->fileUrl().isEmpty());
-        windows.backendFor(written)->discardRecovery();
-    }
-
-    void reopensAWindowFromTheDock() {
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        AppEventFilter appEvents(&windows);
-        QCoreApplication::instance()->installEventFilter(&appEvents);
-        const auto send = [](QEvent::Type type) {
-            QEvent event(type);
-            QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
-        };
-        // macOS activates Write, if it was not already, and then Qt
-        // reports the click as one more activation.
-        const auto clickDockIcon = [&send] {
-            send(QEvent::ApplicationActivate);
-            send(QEvent::ApplicationActivate);
-        };
-        const auto switchFromAnotherApp = [&send] {
-            send(QEvent::ApplicationDeactivate);
-            send(QEvent::ApplicationActivate);
-        };
-
-        QQuickWindow *window = windows.newWindow();
-        QVERIFY(window);
-        clickDockIcon();
-        QCOMPARE(windows.windows().size(), 1);
-
-        // Closing the last window leaves Write running. Switching to it
-        // shows no window, as in other Mac apps, but the Dock icon brings
-        // one back, whether Write was in front or not.
-        QVERIFY(window->close());
-        QVERIFY(windows.windows().isEmpty());
-        switchFromAnotherApp();
-        QVERIFY(windows.windows().isEmpty());
-        send(QEvent::ApplicationActivate);
-        QCOMPARE(windows.windows().size(), 1);
-
-        QVERIFY(windows.activeWindow()->close());
-        send(QEvent::ApplicationDeactivate);
-        clickDockIcon();
-        QCOMPARE(windows.windows().size(), 1);
-    }
-
-    void quitsOnlyOnceEveryWindowAgrees() {
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        QuitRecorder quits;
-        QCoreApplication::instance()->installEventFilter(&quits);
-        AppEventFilter appEvents(&windows);
-        QCoreApplication::instance()->installEventFilter(&appEvents);
-        const auto quit = [] {
-            QEvent event(QEvent::Quit);
-            QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
-            return event.isAccepted();
-        };
-        const auto write = [](QQuickWindow *window) {
-            window->findChild<QObject *>(QStringLiteral("sourceEditor"))
-                ->setProperty("text", QStringLiteral("unsaved"));
-        };
-        const auto dialogOf = [](QQuickWindow *window) {
-            return window->findChild<QObject *>(QStringLiteral("unsavedChangesDialog"));
-        };
-
-        QQuickWindow *back = windows.newWindow();
-        QQuickWindow *clean = windows.newWindow();
-        QQuickWindow *front = windows.newWindow();
-        QVERIFY(back && clean && front);
-        write(back);
-        write(front);
-
-        // The front window asks first, and no window closes while one waits.
-        QVERIFY(!quit());
-        QTRY_VERIFY(dialogOf(front)->property("opened").toBool());
-        QVERIFY(!dialogOf(back)->property("opened").toBool());
-        QCOMPARE(windows.windows().size(), 3);
-
-        // Cancelling that question cancels the quit, and every window stays.
-        QMetaObject::invokeMethod(dialogOf(front), "reject");
-        QTRY_VERIFY(!dialogOf(front)->property("opened").toBool());
-        QTest::qWait(50);
-        QCOMPARE(windows.windows().size(), 3);
-        QVERIFY(!dialogOf(back)->property("opened").toBool());
-        QCOMPARE(quits.acceptedQuits, 0);
-
-        // Answering it carries the quit on to the next window with changes,
-        // before the clean window closes.
-        QVERIFY(!quit());
-        QTRY_VERIFY(dialogOf(front)->property("opened").toBool());
-        QMetaObject::invokeMethod(dialogOf(front), "discardRequested");
-        QTRY_VERIFY(dialogOf(back)->property("opened").toBool());
-        QCOMPARE(windows.windows(), (QList<QQuickWindow *>{back, clean}));
-        QCOMPARE(quits.acceptedQuits, 0);
-
-        // Once the last question is answered, every window closes and the
-        // quit goes through.
-        QMetaObject::invokeMethod(dialogOf(back), "discardRequested");
-        QTRY_COMPARE(quits.acceptedQuits, 1);
-        QVERIFY(windows.windows().isEmpty());
-    }
-
-    void restoresEveryDraftACrashLeftBehind() {
-        // Drafts of its own, apart from any another test or test run left.
-        const QString applicationName = QCoreApplication::applicationName();
-        QCoreApplication::setApplicationName(
-            QStringLiteral("tst_write-drafts-%1").arg(QCoreApplication::applicationPid()));
-        const QString stateDirectory =
-            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        const auto restore = qScopeGuard([&] {
-            QDir(stateDirectory).removeRecursively();
-            QCoreApplication::setApplicationName(applicationName);
-        });
-        QDir().mkpath(stateDirectory);
-        QCOMPARE(Backend::unclaimedRecoveryDrafts(), 0);
-        writeFile(QDir(stateDirectory).filePath(QStringLiteral("recovery-7.json")),
-                  R"({"fileUrl":"","text":"first draft"})");
-        writeFile(QDir(stateDirectory).filePath(QStringLiteral("recovery-8.json")),
-                  R"({"fileUrl":"","text":"second draft"})");
-        QCOMPARE(Backend::unclaimedRecoveryDrafts(), 2);
-
-        QQmlEngine engine;
-        WindowManager windows(&engine, mainQmlUrl());
-        windows.openStartupWindows();
-        QCOMPARE(windows.windows().size(), 2);
-        QStringList texts;
-        for (QQuickWindow *window : windows.windows()) {
-            texts.append(window->findChild<QObject *>(QStringLiteral("sourceEditor"))
-                             ->property("text").toString());
-            QVERIFY(windows.backendFor(window)->modified());
-            windows.backendFor(window)->discardRecovery();
-        }
-        texts.sort();
-        QCOMPARE(texts, QStringList({QStringLiteral("first draft"),
-                                     QStringLiteral("second draft")}));
-        QCOMPARE(Backend::unclaimedRecoveryDrafts(), 0);
-
-        // Without drafts, Write starts with one blank window.
-        WindowManager fresh(&engine, mainQmlUrl());
-        fresh.openStartupWindows();
-        QCOMPARE(fresh.windows().size(), 1);
-        QVERIFY(fresh.backendFor(fresh.activeWindow())->isUntouched());
     }
 
     void savesInAFolderItCannotWriteNewFilesIn() {

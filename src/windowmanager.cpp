@@ -5,14 +5,13 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMenuBar>
-#include <QQmlContext>
-#include <QQmlEngine>
-#include <QQuickWindow>
 #include <QScreen>
+#include <QWindow>
 
 #include <algorithm>
 
 #include "backend.h"
+#include "mainwindow.h"
 
 // How far each new window steps down and to the right of the front one, as
 // macOS cascades document windows.
@@ -30,23 +29,22 @@ QString fileKey(const QUrl &url) {
     return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
 }
 
-void bringForward(QQuickWindow *window) {
-    if (window->windowStates() & Qt::WindowMinimized)
-        window->setWindowStates(window->windowStates() & ~Qt::WindowMinimized);
+void bringForward(MainWindow *window) {
+    if (window->windowState() & Qt::WindowMinimized)
+        window->setWindowState(window->windowState() & ~Qt::WindowMinimized);
     window->raise();
-    window->requestActivate();
+    window->activateWindow();
 }
 
 }
 
-WindowManager::WindowManager(QQmlEngine *engine, const QUrl &mainQml, QObject *parent)
-    : QObject(parent), m_engine(engine), m_component(engine, mainQml),
-      m_textScale(Backend::storedTextScale()) {
+WindowManager::WindowManager(QObject *parent)
+    : QObject(parent), m_textScale(Backend::storedTextScale()) {
     buildNoWindowMenuBar();
 }
 
-// The backends and contexts are children, so they go after every window,
-// whose bindings still read them.
+// The backends are children, so they go after every window, which still
+// reads them.
 WindowManager::~WindowManager() {
     for (const Window &entry : std::as_const(m_windows)) {
         if (entry.window) {
@@ -87,8 +85,8 @@ void WindowManager::buildNoWindowMenuBar() {
     enableWithNoWindow();
 }
 
-QList<QQuickWindow *> WindowManager::windows() const {
-    QList<QQuickWindow *> open;
+QList<MainWindow *> WindowManager::windows() const {
+    QList<MainWindow *> open;
     for (const Window &entry : m_windows) {
         if (entry.open && entry.window)
             open.append(entry.window);
@@ -96,8 +94,8 @@ QList<QQuickWindow *> WindowManager::windows() const {
     return open;
 }
 
-QQuickWindow *WindowManager::activeWindow() const {
-    const QList<QQuickWindow *> open = windows();
+MainWindow *WindowManager::activeWindow() const {
+    const QList<MainWindow *> open = windows();
     return open.isEmpty() ? nullptr : open.constFirst();
 }
 
@@ -105,12 +103,12 @@ Backend *WindowManager::activeBackend() const {
     return backendFor(activeWindow());
 }
 
-Backend *WindowManager::backendFor(const QQuickWindow *window) const {
+Backend *WindowManager::backendFor(const MainWindow *window) const {
     const int index = indexOf(window);
     return index < 0 ? nullptr : m_windows.at(index).backend;
 }
 
-int WindowManager::indexOf(const QQuickWindow *window) const {
+int WindowManager::indexOf(const MainWindow *window) const {
     if (!window)
         return -1;
     for (int index = 0; index < m_windows.size(); ++index) {
@@ -120,30 +118,16 @@ int WindowManager::indexOf(const QQuickWindow *window) const {
     return -1;
 }
 
-QQuickWindow *WindowManager::newWindow() {
+MainWindow *WindowManager::newWindow() {
     auto *backend = new Backend(this);
     backend->setDarkMode(m_darkMode);
-    auto *context = new QQmlContext(m_engine->rootContext(), this);
-    context->setContextProperty(QStringLiteral("backend"), backend);
-
     // The first window opens where the last one closed; the rest step out
     // from the front window, so a new one does not hide another.
-    QVariantMap properties;
-    if (!windows().isEmpty())
-        properties.insert(QStringLiteral("initialGeometry"), cascadedGeometry());
-
-    QObject *object = m_component.createWithInitialProperties(properties, context);
-    auto *window = qobject_cast<QQuickWindow *>(object);
-    if (!window) {
-        qCritical().noquote() << "Could not open a Write window:" << m_component.errorString();
-        delete object;
-        delete context;
-        delete backend;
-        return nullptr;
-    }
-
-    backend->setParentWindow(window);
-    m_windows.prepend({window, backend, context});
+    const WindowGeometry geometry = windows().isEmpty() ? backend->windowGeometry() : cascadedGeometry();
+    auto *window = new MainWindow(backend);
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->applyGeometry(geometry);
+    m_windows.prepend({window, backend});
 
     connect(backend, &Backend::newWindowRequested, this, &WindowManager::newWindow);
     connect(backend, &Backend::textScaleChanged, this, [this, backend]() {
@@ -152,20 +136,16 @@ QQuickWindow *WindowManager::newWindow() {
     connect(backend, &Backend::editorFontChanged, this, [this, backend]() {
         shareEditorFont(backend);
     });
-    connect(window, &QWindow::activeChanged, this, [this, window]() {
-        if (window->isActive())
-            windowActivated(window);
+    connect(window, &MainWindow::activated, this, [this, window]() { windowActivated(window); });
+    connect(window, &MainWindow::closed, this, [this, window]() { windowClosed(window); });
+    connect(window, &QObject::destroyed, this, [this, backend]() { windowDestroyed(backend); });
+    // A quit waiting on this window's answer is off once the writer cancels.
+    connect(window, &MainWindow::closeCancelled, this, [this, window]() {
+        if (m_quitWaitingOn == window)
+            m_quitWaitingOn = nullptr;
     });
-    // A closed window is hidden, never shown again.
-    connect(window, &QWindow::visibleChanged, this, [this, window](bool visible) {
-        if (!visible)
-            windowClosed(window);
-    });
-    connect(window, &QObject::destroyed, this, [this, backend]() {
-        windowDestroyed(backend);
-    });
-    connect(window, SIGNAL(closeCancelled()), this, SLOT(closeCancelled()));
 
+    window->show();
     emit windowCountChanged();
     return window;
 }
@@ -182,8 +162,8 @@ void WindowManager::openStartupWindows() {
 
 void WindowManager::openFile(const QUrl &url) {
     const QString key = fileKey(url);
-    QQuickWindow *target = nullptr;
-    for (QQuickWindow *window : windows()) {
+    MainWindow *target = nullptr;
+    for (MainWindow *window : windows()) {
         if (!key.isEmpty() && fileKey(backendFor(window)->fileUrl()) == key) {
             target = window;
             break;
@@ -191,7 +171,7 @@ void WindowManager::openFile(const QUrl &url) {
     }
 
     if (!target) {
-        for (QQuickWindow *window : windows()) {
+        for (MainWindow *window : windows()) {
             if (backendFor(window)->isUntouched()) {
                 target = window;
                 break;
@@ -213,7 +193,7 @@ bool WindowManager::closeAllWindows() {
     // Every question comes before any window closes, so cancelling one
     // leaves the windows nobody was asked about open. The front window asks
     // first.
-    for (QQuickWindow *window : windows()) {
+    for (MainWindow *window : windows()) {
         if (!backendFor(window)->modified())
             continue;
         bringForward(window);
@@ -224,7 +204,7 @@ bool WindowManager::closeAllWindows() {
     }
 
     // The front window closes last, so its place is the one remembered.
-    const QList<QQuickWindow *> open = windows();
+    const QList<MainWindow *> open = windows();
     for (auto it = open.crbegin(); it != open.crend(); ++it) {
         if (!(*it)->close()) {
             m_quitWaitingOn = *it;
@@ -247,19 +227,19 @@ void WindowManager::setDarkMode(bool darkMode) {
         entry.backend->setDarkMode(darkMode);
 }
 
-QVariantMap WindowManager::cascadedGeometry() const {
-    const QQuickWindow *front = activeWindow();
+WindowGeometry WindowManager::cascadedGeometry() const {
+    const MainWindow *front = activeWindow();
     // A full-screen or zoomed window has no place of its own to step from.
-    if (front->windowStates() & (Qt::WindowFullScreen | Qt::WindowMaximized))
-        return backendFor(front)->qmlWindowGeometry();
+    if (front->windowState() & (Qt::WindowFullScreen | Qt::WindowMaximized))
+        return backendFor(front)->windowGeometry();
 
     const QScreen *screen = front->screen();
     const QRect available = screen ? screen->availableGeometry() : QRect();
-    const QMargins frame = front->frameMargins();
-    const QList<QQuickWindow *> open = windows();
+    const QMargins frame = front->windowHandle() ? front->windowHandle()->frameMargins() : QMargins();
+    const QList<MainWindow *> open = windows();
     const auto taken = [&open](const QPoint &position) {
-        return std::any_of(open.cbegin(), open.cend(), [&position](const QQuickWindow *window) {
-            return window->position() == position;
+        return std::any_of(open.cbegin(), open.cend(), [&position](const MainWindow *window) {
+            return window->geometry().topLeft() == position;
         });
     };
 
@@ -274,20 +254,16 @@ QVariantMap WindowManager::cascadedGeometry() const {
             break;
     }
 
-    return {{QStringLiteral("x"), geometry.x()},
-            {QStringLiteral("y"), geometry.y()},
-            {QStringLiteral("width"), geometry.width()},
-            {QStringLiteral("height"), geometry.height()},
-            {QStringLiteral("maximized"), false}};
+    return {geometry.x(), geometry.y(), geometry.width(), geometry.height(), false};
 }
 
-void WindowManager::windowActivated(QQuickWindow *window) {
+void WindowManager::windowActivated(MainWindow *window) {
     const int index = indexOf(window);
     if (index > 0)
         m_windows.move(index, 0);
 }
 
-void WindowManager::windowClosed(QQuickWindow *window) {
+void WindowManager::windowClosed(MainWindow *window) {
     const int index = indexOf(window);
     if (index < 0 || !m_windows.at(index).open)
         return;
@@ -295,12 +271,11 @@ void WindowManager::windowClosed(QQuickWindow *window) {
     m_windows[index].open = false;
     // The last window to close says where the next launch opens. A full-screen
     // window's size is the screen's, not one to come back to.
-    if (windows().isEmpty() && !(window->windowStates() & Qt::WindowFullScreen)) {
+    if (windows().isEmpty() && !(window->windowState() & Qt::WindowFullScreen)) {
+        const QRect geometry = window->isMaximized() ? window->normalGeometry() : window->geometry();
         m_windows.at(index).backend->saveWindowGeometry(
-            window->x(), window->y(), window->width(), window->height(),
-            window->windowStates() & Qt::WindowMaximized);
+            geometry.x(), geometry.y(), geometry.width(), geometry.height(), window->isMaximized());
     }
-    window->deleteLater();
     emit windowCountChanged();
 
     // The writer answered this window's question, so the quit carries on to
@@ -311,23 +286,15 @@ void WindowManager::windowClosed(QQuickWindow *window) {
     }
 }
 
-// The window is still coming down, so its backend and context wait until it
-// is gone.
+// The window is still coming down, so its backend waits until it is gone.
 void WindowManager::windowDestroyed(Backend *backend) {
     for (int index = 0; index < m_windows.size(); ++index) {
         if (m_windows.at(index).backend == backend) {
-            m_windows.at(index).context->deleteLater();
             m_windows.removeAt(index);
             break;
         }
     }
     backend->deleteLater();
-}
-
-// A quit waiting on this window's answer is off once the writer cancels.
-void WindowManager::closeCancelled() {
-    if (m_quitWaitingOn.data() == sender())
-        m_quitWaitingOn = nullptr;
 }
 
 void WindowManager::shareTextScale(Backend *source) {

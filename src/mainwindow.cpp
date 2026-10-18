@@ -210,10 +210,12 @@ QWidget *MainWindow::editTarget() const {
     return m_editor;
 }
 
+// The place is the window's inside, past its title bar, as it is saved.
 void MainWindow::applyGeometry(const WindowGeometry &geometry) {
     if (geometry.x >= 0 && geometry.y >= 0)
-        move(geometry.x, geometry.y);
-    resize(geometry.width, geometry.height);
+        setGeometry(geometry.x, geometry.y, geometry.width, geometry.height);
+    else
+        resize(geometry.width, geometry.height);
     if (geometry.maximized)
         setWindowState(windowState() | Qt::WindowMaximized);
 }
@@ -262,6 +264,7 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
 void MainWindow::closeEvent(QCloseEvent *event) {
     if (m_closeConfirmed || !m_backend->modified()) {
         QMainWindow::closeEvent(event);
+        emit closed();
         return;
     }
     event->ignore();

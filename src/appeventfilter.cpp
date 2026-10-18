@@ -19,9 +19,10 @@ bool AppEventFilter::eventFilter(QObject *watched, QEvent *event) {
         m_windows->openFile(static_cast<QFileOpenEvent *>(event)->url());
         return true;
     case QEvent::Quit:
-        // QApplication closes only widget windows before it quits, so ask the
-        // Write windows here. A window that stays open has unsaved changes
-        // to ask about, and the quit waits for the answer.
+        // QApplication would ask every window at once before it quits, so
+        // ask them here, one at a time from the front. A window that stays
+        // open has unsaved changes to ask about, and the quit waits for the
+        // answer.
         if (!m_windows->closeAllWindows()) {
             event->ignore();
             return true;
