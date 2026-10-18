@@ -2368,6 +2368,7 @@ private slots:
 
     // View › Font offers eight fonts, with a tick by the one the text is in.
     void choosesTheEditorFontFromTheFontMenu() {
+        QVERIFY(addWritesFonts());
         WindowFixture fixture;
         QVERIFY(fixture.show());
         const QString before = fixture.backend.editorFont();
@@ -2382,16 +2383,15 @@ private slots:
             }
             return list;
         };
-        QCOMPARE(names(false), (QStringList{QStringLiteral("Avenir"), QStringLiteral("Georgia"),
-                                           QStringLiteral("IBM Plex Mono"), QStringLiteral("Menlo"),
+        QCOMPARE(names(false), (QStringList{QStringLiteral("IBM Plex Mono"), QStringLiteral("Menlo"),
                                            QStringLiteral("Monaco"), QStringLiteral("PT Mono"),
-                                           QStringLiteral("SF Mono"), QStringLiteral("SF Pro")}));
+                                           QStringLiteral("SF Mono")}));
         QCOMPARE(names(true), QStringList{QStringLiteral("Menlo")});
 
-        QVERIFY(fixture.choose(QStringLiteral("Georgia")));
-        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Georgia"));
-        QCOMPARE(fixture.editor()->font().family(), QStringLiteral("Georgia"));
-        QCOMPARE(names(true), QStringList{QStringLiteral("Georgia")});
+        QVERIFY(fixture.choose(QStringLiteral("PT Mono")));
+        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("PT Mono"));
+        QCOMPARE(fixture.editor()->font().family(), QStringLiteral("PT Mono"));
+        QCOMPARE(names(true), QStringList{QStringLiteral("PT Mono")});
 
         // A change from elsewhere, such as another window, moves the tick.
         fixture.backend.setEditorFont(QStringLiteral("Monaco"));
@@ -2399,50 +2399,35 @@ private slots:
         fixture.backend.setEditorFont(before);
     }
 
-    // Every font Write offers comes with macOS or with Write itself, so the
-    // writer finds the same eight on any Mac. SF Pro and SF Mono are the faces
-    // macOS sets its own interface in, not Apple's separate download of them.
-    void offersOnlyFontsEveryMacHas() {
+    // Write offers monospaced fonts only, each of which comes with macOS or
+    // with Write itself, so the writer finds the same five on any Mac. SF
+    // Mono is the copy macOS keeps for itself, not Apple's separate download.
+    void offersMonospacedFontsEveryMacHas() {
         QVERIFY(addWritesFonts());
+        QCOMPARE(Backend::editorFonts(),
+                 (QStringList{QStringLiteral("IBM Plex Mono"), QStringLiteral("Menlo"),
+                              QStringLiteral("Monaco"), QStringLiteral("PT Mono"),
+                              QStringLiteral("SF Mono")}));
         for (const QString &name : Backend::editorFonts()) {
             const QString family = Backend::fontFamily(name);
-            QVERIFY2(QFontDatabase::hasFamily(family), qPrintable(name));
+            QVERIFY2(QFontDatabase::isFixedPitch(family), qPrintable(name));
             QFont font(family);
             font.setPixelSize(20);
             QCOMPARE(QFontInfo(font).family(), family);
         }
-        QCOMPARE(Backend::fontFamily(QStringLiteral("SF Pro")), QStringLiteral(".AppleSystemUIFont"));
         QCOMPARE(Backend::fontFamily(QStringLiteral("SF Mono")), QStringLiteral(".SF NS Mono"));
-        QCOMPARE(Backend::fontFamily(QStringLiteral("Georgia")), QStringLiteral("Georgia"));
-        QVERIFY(QFontDatabase::isFixedPitch(Backend::fontFamily(QStringLiteral("SF Mono"))));
     }
 
-    // Code stays monospaced when the text is not: inline and fenced code take
-    // Write's own font beside a proportional one, and the text's own beside a
-    // monospaced one.
-    void setsCodeInAMonospacedFont() {
+    // A font this Mac lacks is left out, not offered and then missing. SF Mono
+    // and Write's own font are there only once Write adds them.
+    void leavesOutFontsThisMacLacks() {
         QVERIFY(addWritesFonts());
-        EditorFixture fixture;
-        const QString before = fixture.backend.editorFont();
-        const auto codeFamilies = [&fixture](int number) {
-            QStringList families;
-            for (const QTextLayout::FormatRange &range :
-                 fixture.editor->document()->findBlockByNumber(number).layout()->formats()) {
-                if (range.format.hasProperty(QTextFormat::FontFamilies))
-                    families << range.format.fontFamilies().toStringList();
-            }
-            families.removeDuplicates();
-            return families;
-        };
-        fixture.backend.setEditorFont(QStringLiteral("Georgia"));
-        fixture.load(QStringLiteral("prose `inline` prose\n```\nfenced\n```"), 0);
-        QCOMPARE(codeFamilies(0), QStringList{QStringLiteral("IBM Plex Mono")});
-        QCOMPARE(codeFamilies(2), QStringList{QStringLiteral("IBM Plex Mono")});
-
-        fixture.backend.setEditorFont(QStringLiteral("SF Mono"));
-        QCOMPARE(codeFamilies(0), QStringList());
-        QCOMPARE(codeFamilies(2), QStringList());
-        fixture.backend.setEditorFont(before);
+        QFontDatabase::removeAllApplicationFonts();
+        QCOMPARE(Backend::editorFonts(),
+                 (QStringList{QStringLiteral("Menlo"), QStringLiteral("Monaco"),
+                              QStringLiteral("PT Mono")}));
+        QVERIFY(Backend::addFonts(QDir(QFINDTESTDATA("../fonts"))));
+        QCOMPARE(Backend::editorFonts().size(), 5);
     }
 
     // A file opened from the Open panel lands with the writer back in the

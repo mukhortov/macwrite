@@ -14,8 +14,7 @@ public:
 
     void setTheme(bool darkMode, const QString &background, const QString &foreground,
                   const QString &accent, const QString &codeBackground);
-    // Code takes the family given, or the text's own when there is none.
-    void refreshFont(const QString &codeFamily);
+    void refreshFont();
 
     struct Span {
         int start;
@@ -70,7 +69,6 @@ private:
     QString m_customForeground;
     QString m_customAccent;
     QString m_customCodeBackground;
-    QString m_codeFamily;
     QTextCharFormat m_markerFormat;
     QTextCharFormat m_hiddenMarkerFormat;
     QTextCharFormat m_headingFormat;

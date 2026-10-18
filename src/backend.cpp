@@ -128,9 +128,7 @@ Backend::Backend(QObject *parent) : QObject(parent) {
     setKnownFileContents(QByteArray(), false);
 
     const QString savedFont = QSettings().value(editorFontSetting).toString();
-    m_editorFont = editorFonts().contains(savedFont) && QFontDatabase::hasFamily(fontFamily(savedFont))
-        ? savedFont
-        : defaultEditorFont();
+    m_editorFont = editorFonts().contains(savedFont) ? savedFont : defaultEditorFont();
 
     QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
     // Claim an orphaned snapshot before taking an empty slot. This ensures a
@@ -803,19 +801,23 @@ QString Backend::defaultEditorFont() {
     return QStringLiteral("IBM Plex Mono");
 }
 
-// The fonts Write offers, by the names View › Font shows. Each comes with
-// macOS or with Write, so every Mac has all of them.
+// The monospaced fonts Write offers, by the names View › Font shows. Each
+// comes with macOS or with Write, but one this Mac lacks is left out rather
+// than offered and then missing.
 QStringList Backend::editorFonts() {
-    return {QStringLiteral("Avenir"),  QStringLiteral("Georgia"), QStringLiteral("IBM Plex Mono"),
-            QStringLiteral("Menlo"),   QStringLiteral("Monaco"),  QStringLiteral("PT Mono"),
-            QStringLiteral("SF Mono"), QStringLiteral("SF Pro")};
+    QStringList fonts;
+    for (const QString &name : {QStringLiteral("IBM Plex Mono"), QStringLiteral("Menlo"),
+                                QStringLiteral("Monaco"), QStringLiteral("PT Mono"),
+                                QStringLiteral("SF Mono")}) {
+        if (QFontDatabase::hasFamily(fontFamily(name)))
+            fonts << name;
+    }
+    return fonts;
 }
 
-// "SF Pro" and "SF Mono" name Apple's separate download of them. macOS's own
-// copies, which set its interface, go by hidden names.
+// "SF Mono" names Apple's separate download of it. macOS's own copy goes by
+// a hidden name.
 QString Backend::fontFamily(const QString &name) {
-    if (name == QLatin1String("SF Pro"))
-        return QStringLiteral(".AppleSystemUIFont");
     if (name == QLatin1String("SF Mono"))
         return QStringLiteral(".SF NS Mono");
     return name;
@@ -851,10 +853,8 @@ bool Backend::editorFontFixedPitch() const {
 }
 
 void Backend::documentFontChanged() {
-    // Code stays monospaced beside a proportional font, in Write's own.
     if (m_highlighter)
-        m_highlighter->refreshFont(editorFontFixedPitch() ? QString()
-                                                          : fontFamily(defaultEditorFont()));
+        m_highlighter->refreshFont();
 }
 
 void Backend::loadDocumentText(const QString &text) {
