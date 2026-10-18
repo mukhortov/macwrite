@@ -7,6 +7,8 @@
 #include <QPainter>
 #include <QScrollBar>
 #include <QTextBlock>
+#include <QToolTip>
+#include <QWheelEvent>
 
 #include "backend.h"
 #include "markdownedits.h"
@@ -44,6 +46,7 @@ MarkdownEditor::MarkdownEditor(Backend *backend, QWidget *parent)
     connect(m_backend, &Backend::textScaleChanged, this, &MarkdownEditor::applyFont);
     connect(m_backend, &Backend::themeColorsChanged, this, &MarkdownEditor::applyTheme);
     connect(m_backend, &Backend::darkModeChanged, this, &MarkdownEditor::applyTheme);
+    connect(m_backend, &Backend::darkModeChanged, this, &MarkdownEditor::applySearchHighlights);
     connect(this, &QTextEdit::cursorPositionChanged, this, &MarkdownEditor::ensureCaretVisible);
     // Backend keeps the line height on what was typed, and tells an edit
     // from a pass of formatting.
@@ -52,6 +55,10 @@ MarkdownEditor::MarkdownEditor(Backend *backend, QWidget *parent)
             emit edited();
     });
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &MarkdownEditor::viewChanged);
+    // A link that scrolls or is edited away from the pointer is no longer under it.
+    connect(this, &MarkdownEditor::viewChanged, this, &MarkdownEditor::forgetHoveredLink);
+    connect(this, &QTextEdit::textChanged, this, &MarkdownEditor::forgetHoveredLink);
+    viewport()->setMouseTracking(true);
     connect(m_layout, &QAbstractTextDocumentLayout::documentSizeChanged, this,
             &MarkdownEditor::viewChanged);
     applyTheme();
@@ -258,4 +265,105 @@ void MarkdownEditor::movePage(int direction, bool extendSelection) {
     QTextCursor cursor = textCursor();
     cursor.setPosition(position, extendSelection ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
     setTextCursor(cursor);
+}
+
+// The nearest caret can be past the end of a line, so only a character the
+// point is inside counts: the one on either side of that caret, whichever
+// way the text runs.
+QString MarkdownEditor::linkAt(const QPoint &point) const {
+    const int length = document()->characterCount() - 1;
+    const int caret = cursorForPosition(point).position();
+    QTextCursor probe(document());
+    for (int position = qMax(0, caret - 1); position <= caret && position < length; ++position) {
+        probe.setPosition(position);
+        const QRect box = cursorRect(probe);
+        probe.setPosition(position + 1);
+        const QRect next = cursorRect(probe);
+        // A hidden marker has no width; only a line's last character needs an
+        // estimate.
+        const int edge = next.y() == box.y()
+            ? next.x() : box.x() + qRound(QFontMetricsF(font()).averageCharWidth());
+        if (point.y() >= box.y() && point.y() < box.y() + box.height()
+                && point.x() >= qMin(box.x(), edge) && point.x() < qMax(box.x(), edge))
+            return m_backend->linkUrlAt(position);
+    }
+    return {};
+}
+
+QString MarkdownEditor::linkTooltip(const QString &url, int maximumWidth) {
+    const QString elided =
+        QFontMetrics(QToolTip::font()).elidedText(url, Qt::ElideMiddle, maximumWidth);
+    // A tooltip takes text that looks like HTML for HTML, and a destination is
+    // the writer's text, so it goes in escaped.
+    return Qt::convertFromPlainText(elided, Qt::WhiteSpaceNormal);
+}
+
+void MarkdownEditor::mouseMoveEvent(QMouseEvent *event) {
+    QTextEdit::mouseMoveEvent(event);
+    const QString url = linkAt(event->position().toPoint());
+    if (url == m_hoveredLink)
+        return;
+    m_hoveredLink = url;
+    if (url.isEmpty())
+        QToolTip::hideText();
+    else
+        QToolTip::showText(event->globalPosition().toPoint() + QPoint(12, 20),
+                           linkTooltip(url, window()->width() - 32), viewport());
+}
+
+void MarkdownEditor::forgetHoveredLink() {
+    if (m_hoveredLink.isEmpty())
+        return;
+    m_hoveredLink.clear();
+    QToolTip::hideText();
+}
+
+// Cmd+scroll changes the text size, as in a browser.
+void MarkdownEditor::wheelEvent(QWheelEvent *event) {
+    if (!(event->modifiers() & Qt::ControlModifier)) {
+        QTextEdit::wheelEvent(event);
+        return;
+    }
+    // Finger scrolling synthesizes an angle too, so its pixels come first.
+    const QPoint pixels = event->pixelDelta();
+    zoomByWheel(pixels.y() != 0 ? pixels.y() / 50.0 : event->angleDelta().y() / 120.0);
+    event->accept();
+}
+
+// A wheel notch is a whole step, but a touchpad trickles in pixels, so bank
+// the fractions and step once a whole one is scrolled.
+void MarkdownEditor::zoomByWheel(qreal notches) {
+    if (m_zoomNotches * notches < 0)
+        m_zoomNotches = 0;
+    m_zoomNotches += notches;
+    while (m_zoomNotches >= 1) {
+        m_backend->increaseTextSize();
+        m_zoomNotches -= 1;
+    }
+    while (m_zoomNotches <= -1) {
+        m_backend->decreaseTextSize();
+        m_zoomNotches += 1;
+    }
+}
+
+void MarkdownEditor::setSearchHighlights(const QList<SearchHighlight> &highlights) {
+    m_searchHighlights = highlights;
+    applySearchHighlights();
+}
+
+void MarkdownEditor::applySearchHighlights() {
+    const bool dark = m_backend->darkMode();
+    const QColor match(dark ? QStringLiteral("#725b18") : QStringLiteral("#ffe58a"));
+    const QColor current(dark ? QStringLiteral("#b36b20") : QStringLiteral("#ffad42"));
+    QList<ExtraSelection> selections;
+    selections.reserve(m_searchHighlights.size());
+    for (const SearchHighlight &highlight : std::as_const(m_searchHighlights)) {
+        ExtraSelection selection;
+        selection.cursor = QTextCursor(document());
+        selection.cursor.setPosition(highlight.start);
+        selection.cursor.setPosition(highlight.end, QTextCursor::KeepAnchor);
+        selection.format.setBackground(highlight.current ? current : match);
+        selections.append(selection);
+    }
+    setExtraSelections(selections);
 }

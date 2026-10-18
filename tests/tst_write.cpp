@@ -15,6 +15,7 @@
 #include <QStandardPaths>
 #include <QClipboard>
 #include <QMimeData>
+#include <QWheelEvent>
 #include <QJSValue>
 #include <QAction>
 #include <QMenuBar>
@@ -1638,6 +1639,156 @@ private slots:
         QVERIFY(qAbs(caretY() - anchorY) <= lineHeight);
     }
 
+    void showsLinkUrlOnlyOverTheLinkText() {
+        // Probing a character past the end of the text warns from QTextCursor.
+        QTest::failOnWarning(QRegularExpression(QStringLiteral("out of range")));
+
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        MarkdownEditor *editor = fixture.editor;
+        const auto urlUnder = [editor](int x, int y) { return editor->linkAt(QPoint(x, y)); };
+        const auto boxAt = [editor](int position) {
+            QTextCursor cursor(editor->document());
+            cursor.setPosition(position);
+            return editor->cursorRect(cursor);
+        };
+        fixture.load(QStringLiteral("see [label](https://example.com)\nplain"), 0);
+
+        // Over the label (the hidden "[" is index 4), in the right half of a
+        // character too.
+        const QRect first = boxAt(5);
+        const QRect second = boxAt(6);
+        const int middleY = first.y() + first.height() / 2;
+        QCOMPARE(urlUnder(first.x() + 1, middleY), QStringLiteral("https://example.com"));
+        QCOMPARE(urlUnder(second.x() - 1, middleY), QStringLiteral("https://example.com"));
+        // Over the plain word before it.
+        QCOMPARE(urlUnder(boxAt(0).x() + 1, middleY), QString());
+        // Past the end of the line the link ends.
+        QCOMPARE(urlUnder(editor->viewport()->width() - 2, middleY), QString());
+        // The right half of the label's last character still counts, though
+        // the nearest caret position is past the label.
+        QCOMPARE(urlUnder(boxAt(10).x() - 1, middleY), QStringLiteral("https://example.com"));
+
+        // Below a last line that is a link, the nearest caret snaps up onto it.
+        fixture.load(QStringLiteral("[label](https://example.com)"), 0);
+        const QRect only = boxAt(1);
+        QCOMPARE(urlUnder(only.x() + 1, only.y() + only.height() / 2),
+                 QStringLiteral("https://example.com"));
+        QCOMPARE(urlUnder(only.x() + 1, only.y() + only.height() * 3), QString());
+
+        // A wide character counts across its whole width.
+        fixture.load(QStringLiteral("[宽](https://example.com)"), 0);
+        const QRect wide = boxAt(1);
+        const int wideRight = boxAt(2).x();
+        QVERIFY(wideRight - wide.x() > editor->font().pixelSize() * 0.7);
+        QCOMPARE(urlUnder(wideRight - 1, wide.y() + wide.height() / 2),
+                 QStringLiteral("https://example.com"));
+
+        // A right-to-left label runs the other way across the screen.
+        fixture.load(QStringLiteral("[שלום](https://example.org)"), 0);
+        const QRect rtlFirst = boxAt(1);
+        const QRect rtlSecond = boxAt(2);
+        QVERIFY(rtlSecond.x() < rtlFirst.x());
+        const int rtlY = rtlFirst.y() + rtlFirst.height() / 2;
+        QCOMPARE(urlUnder((rtlFirst.x() + rtlSecond.x()) / 2, rtlY),
+                 QStringLiteral("https://example.org"));
+        QCOMPARE(urlUnder(rtlFirst.x() - 1, rtlY), QStringLiteral("https://example.org"));
+
+        // Link-like text inside fenced code is not a link.
+        fixture.load(QStringLiteral("```\n[label](https://example.com)\n```"), 0);
+        QCOMPARE(fixture.backend.linkUrlAt(5), QString());
+
+        // Moving the pointer over a link is what shows it. The move goes to the
+        // view itself, as QTest moving the real pointer does not reach a
+        // window on macOS.
+        fixture.load(QStringLiteral("see [label](https://example.com)"), 0);
+        const auto moveTo = [editor](const QPoint &point) {
+            QMouseEvent move(QEvent::MouseMove, point, editor->viewport()->mapToGlobal(point),
+                             Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(editor->viewport(), &move);
+        };
+        const QPoint over(boxAt(6).x(), boxAt(6).center().y());
+        moveTo(over);
+        QCOMPARE(editor->hoveredLink(), QStringLiteral("https://example.com"));
+        moveTo(QPoint(boxAt(1).x(), over.y()));
+        QCOMPARE(editor->hoveredLink(), QString());
+    }
+
+    void showsLinkTooltipUrlAsPlainText() {
+        // A destination Qt would mistake for HTML must still read as itself.
+        const QString destination = QStringLiteral("<img src=\"https://example.com/pixel\">");
+        QVERIFY(Qt::mightBeRichText(destination));
+        QTextDocument shown;
+        shown.setHtml(MarkdownEditor::linkTooltip(destination, 2000));
+        QCOMPARE(shown.toPlainText(), destination);
+
+        // A long one is cut in the middle to fit.
+        const QString longUrl = QStringLiteral("https://example.com/") + QString(400, QLatin1Char('a'))
+            + QStringLiteral("/end");
+        shown.setHtml(MarkdownEditor::linkTooltip(longUrl, 300));
+        QVERIFY(shown.toPlainText().size() < longUrl.size());
+        QVERIFY(shown.toPlainText().startsWith(QStringLiteral("https://")));
+        QVERIFY(shown.toPlainText().endsWith(QStringLiteral("/end")));
+    }
+
+    void banksTouchpadScrollBeforeChangingTextSize() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        QWidget *viewport = fixture.editor->viewport();
+        const auto scrollBy = [viewport](int angle, int pixels) {
+            const QPointF at(10, 10);
+            QWheelEvent wheel(at, viewport->mapToGlobal(at), QPoint(0, pixels), QPoint(0, angle),
+                              Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(viewport, &wheel);
+        };
+
+        // A touchpad trickles in pixels: a nudge is not a whole step yet. Its
+        // events carry a synthesized angleDelta as well.
+        scrollBy(240, 20);
+        scrollBy(240, 20);
+        QCOMPARE(fixture.backend.textScale(), 1.0);
+        scrollBy(240, 20);
+        QCOMPARE(fixture.backend.textScale(), 1.1);
+
+        // A wheel notch is one step, and reversing drops the banked remainder.
+        scrollBy(-120, 0);
+        QCOMPARE(fixture.backend.textScale(), 1.0);
+
+        // Without ⌘ the wheel scrolls, as anywhere.
+        fixture.load(QString(500, QLatin1Char('\n')), 0);
+        const QPointF at(10, 10);
+        QWheelEvent scroll(at, viewport->mapToGlobal(at), QPoint(), QPoint(0, -120), Qt::NoButton,
+                           Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(viewport, &scroll);
+        QVERIFY(fixture.editor->verticalScrollBar()->value() > 0);
+        QCOMPARE(fixture.backend.textScale(), 1.0);
+        fixture.backend.resetTextSize();
+    }
+
+    void highlightsSearchMatchesInTheirColours() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("ab xyz cd xyz ef"), 0);
+        const auto backgrounds = [&fixture]() {
+            QStringList colours;
+            for (const QTextEdit::ExtraSelection &selection : fixture.editor->extraSelections())
+                colours.append(selection.format.background().color().name());
+            return colours;
+        };
+
+        fixture.backend.setDarkMode(true);
+        fixture.editor->setSearchHighlights({{3, 6, false}, {10, 13, true}});
+        QCOMPARE(fixture.editor->extraSelections().size(), 2);
+        QCOMPARE(fixture.editor->extraSelections().at(1).cursor.selectedText(), QStringLiteral("xyz"));
+        QCOMPARE(backgrounds(), QStringList({QStringLiteral("#725b18"), QStringLiteral("#b36b20")}));
+
+        fixture.backend.setDarkMode(false);
+        QCOMPARE(backgrounds(), QStringList({QStringLiteral("#ffe58a"), QStringLiteral("#ffad42")}));
+
+        fixture.editor->setSearchHighlights({});
+        QVERIFY(fixture.editor->extraSelections().isEmpty());
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());
@@ -2324,110 +2475,6 @@ private slots:
         const QString escaped = QStringLiteral(R"([wiki](https://example.com/a\(b\)))");
         QCOMPARE(MarkdownHighlighter::linkUrlAt(escaped, 1),
                  QStringLiteral("https://example.com/a(b)"));
-    }
-
-    void showsLinkUrlOnlyOverTheLinkText() {
-        // Probing a character past the end of the text warns from QTextCursor.
-        QTest::failOnWarning(QRegularExpression(QStringLiteral("out of range")));
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
-        auto *window = qobject_cast<QQuickWindow *>(object.data());
-        QVERIFY(window);
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        editor->setProperty("text", QStringLiteral("see [label](https://example.com)\nplain"));
-
-        const auto urlUnder = [editor](qreal x, qreal y) {
-            QVariant url;
-            QMetaObject::invokeMethod(editor, "linkUrlUnder", Q_RETURN_ARG(QVariant, url),
-                                      Q_ARG(QVariant, x), Q_ARG(QVariant, y));
-            return url.toString();
-        };
-        const auto boxAt = [editor](int position) {
-            QRectF box;
-            QMetaObject::invokeMethod(editor, "positionToRectangle", Q_RETURN_ARG(QRectF, box),
-                                      Q_ARG(int, position));
-            return box;
-        };
-
-        // Over the label (the hidden "[" is index 4), in the right half of a
-        // character too.
-        const QRectF first = boxAt(5);
-        const QRectF second = boxAt(6);
-        const qreal middleY = first.y() + first.height() / 2;
-        QCOMPARE(urlUnder(first.x() + 1, middleY), QStringLiteral("https://example.com"));
-        QCOMPARE(urlUnder(second.x() - 1, middleY), QStringLiteral("https://example.com"));
-        // Over the plain word before it.
-        QCOMPARE(urlUnder(boxAt(0).x() + 1, middleY), QString());
-        // Past the end of the line the link ends.
-        QCOMPARE(urlUnder(editor->property("width").toReal() - 2, middleY), QString());
-        // The right half of the label's last character still counts, though
-        // the nearest caret position is past the label.
-        QCOMPARE(urlUnder(boxAt(10).x() - 1, middleY), QStringLiteral("https://example.com"));
-
-        // Below a last line that is a link, positionAt() snaps up onto it.
-        editor->setProperty("text", QStringLiteral("[label](https://example.com)"));
-        const QRectF only = boxAt(1);
-        QCOMPARE(urlUnder(only.x() + 1, only.y() + only.height() / 2),
-                 QStringLiteral("https://example.com"));
-        QCOMPARE(urlUnder(only.x() + 1, only.y() + only.height() * 3), QString());
-
-        // A wide character counts across its whole width.
-        editor->setProperty("text", QStringLiteral("[\u5bbd](https://example.com)"));
-        const QRectF wide = boxAt(1);
-        const qreal wideRight = boxAt(2).x();
-        QVERIFY(wideRight - wide.x() > editor->property("font").value<QFont>().pixelSize() * 0.7);
-        QCOMPARE(urlUnder(wideRight - 1, wide.y() + wide.height() / 2),
-                 QStringLiteral("https://example.com"));
-
-        // A right-to-left label runs the other way across the screen.
-        editor->setProperty("text", QStringLiteral("[\u05e9\u05dc\u05d5\u05dd](https://example.org)"));
-        const QRectF rtlFirst = boxAt(1);
-        const QRectF rtlSecond = boxAt(2);
-        QVERIFY(rtlSecond.x() < rtlFirst.x());
-        const qreal rtlY = rtlFirst.y() + rtlFirst.height() / 2;
-        QCOMPARE(urlUnder((rtlFirst.x() + rtlSecond.x()) / 2, rtlY),
-                 QStringLiteral("https://example.org"));
-        QCOMPARE(urlUnder(rtlFirst.x() - 1, rtlY), QStringLiteral("https://example.org"));
-
-        // Link-like text inside fenced code is not a link.
-        editor->setProperty("text", QStringLiteral("```\n[label](https://example.com)\n```"));
-        QCOMPARE(backend.linkUrlAt(5), QString());
-    }
-
-    void showsLinkTooltipUrlAsPlainText() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *tooltipText =
-            window->findChild<QObject *>(QStringLiteral("linkTooltipText"));
-        QVERIFY(tooltipText);
-
-        // A destination Qt would mistake for HTML must still read as itself.
-        const QString destination =
-            QStringLiteral("<img src=\"https://example.com/pixel\">");
-        QVERIFY(Qt::mightBeRichText(destination));
-        tooltipText->setProperty("text", destination);
-        QCOMPARE(tooltipText->property("text").toString(), destination);
-        QCOMPARE(tooltipText->property("textFormat").toInt(), int(Qt::PlainText));
     }
 
     void leavesInlineCodeLiteral() {
@@ -3151,43 +3198,6 @@ private slots:
         backend.resetTextSize();
         QCOMPARE(backend.textScale(), 1.0);
         QCOMPARE(Backend().textScale(), 1.0);
-    }
-
-    void banksTouchpadScrollBeforeChangingTextSize() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *scroll = window->findChild<QObject *>(QStringLiteral("editorScroll"));
-        QVERIFY(scroll);
-
-        const auto scrollBy = [scroll](int angle, int pixels) {
-            const QVariant wheel = QVariantMap{
-                {QStringLiteral("angleDelta"), QVariantMap{{QStringLiteral("y"), angle}}},
-                {QStringLiteral("pixelDelta"), QVariantMap{{QStringLiteral("y"), pixels}}}};
-            QVERIFY(QMetaObject::invokeMethod(scroll, "zoomByWheel", Q_ARG(QVariant, wheel)));
-        };
-
-        // A touchpad trickles in pixels: a nudge is not a whole step yet. Its
-        // events carry a synthesized angleDelta as well.
-        scrollBy(240, 20);
-        scrollBy(240, 20);
-        QCOMPARE(backend.textScale(), 1.0);
-        scrollBy(240, 20);
-        QCOMPARE(backend.textScale(), 1.1);
-
-        // A wheel notch is one step, and reversing drops the banked remainder.
-        scrollBy(-120, 0);
-        QCOMPARE(backend.textScale(), 1.0);
-
-        backend.resetTextSize();
     }
 
     void growsTextFromEitherPlusKey() {

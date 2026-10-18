@@ -4,6 +4,8 @@
 
 #include <utility>
 
+#include "findbar.h"
+
 class Backend;
 class PlainTextLayout;
 
@@ -29,6 +31,14 @@ public:
     // Links the selection, or a placeholder, to the URL on the clipboard.
     void insertLink();
 
+    // The link under a point of the viewport, or nothing.
+    QString linkAt(const QPoint &point) const;
+    QString hoveredLink() const { return m_hoveredLink; }
+    // A link's destination as a tooltip shows it: as itself, cut in the
+    // middle to fit.
+    static QString linkTooltip(const QString &url, int maximumWidth);
+    void setSearchHighlights(const QList<SearchHighlight> &highlights);
+
 signals:
     // The view scrolled, resized or reflowed, so other positions are in it.
     void viewChanged();
@@ -41,6 +51,8 @@ protected:
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
     void insertFromMimeData(const QMimeData *source) override;
 
 private:
@@ -50,8 +62,15 @@ private:
     void moveCaretVisibly(int direction);
     void movePage(int direction, bool extendSelection);
     int skipHidden(int position, int direction) const;
+    void zoomByWheel(qreal notches);
+    void forgetHoveredLink();
+    void applySearchHighlights();
     QColor mutedColour() const;
 
     Backend *m_backend;
     PlainTextLayout *m_layout;
+    QString m_hoveredLink;
+    QList<SearchHighlight> m_searchHighlights;
+    // Touchpad scrolling toward a text size step, banked until it adds up to one.
+    qreal m_zoomNotches = 0;
 };
