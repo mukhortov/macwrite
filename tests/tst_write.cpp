@@ -1,4 +1,7 @@
 #include <QtTest>
+#include <QScopeGuard>
+#include <QSemaphore>
+#include <QThreadPool>
 #include <QFont>
 #include <QAbstractTextDocumentLayout>
 #include <QTextBlock>
@@ -412,6 +415,71 @@ private slots:
         // Matches do not overlap, and a near miss does not hide the next one.
         QCOMPARE(find(QStringLiteral("aaa"), QStringLiteral("aa")), Matches({0}));
         QCOMPARE(find(QStringLiteral("tțara"), QStringLiteral("țara")), Matches({1}));
+    }
+
+    void countsWordsAfterEditsWithoutBlocking() {
+        Backend backend;
+        QScopedPointer<MarkdownEditor> editor(makeEditor(backend));
+        QTextDocument *document = editor->document();
+        const auto insert = [document](int position, const QString &text) {
+            QTextCursor cursor(document);
+            cursor.setPosition(position);
+            cursor.insertText(text);
+        };
+        QList<int> shown;
+        connect(&backend, &Backend::wordCountChanged, this,
+                [&backend, &shown]() { shown.append(backend.wordCount()); });
+
+        editor->setPlainText(QStringLiteral("one two"));
+        QTRY_COMPARE(backend.wordCount(), 2);
+
+        // Hold the thread pool's only thread so a count stays in flight until
+        // the gate opens, whatever the timing.
+        QThreadPool *pool = QThreadPool::globalInstance();
+        const int maxThreads = pool->maxThreadCount();
+        pool->setMaxThreadCount(1);
+        QSemaphore gate;
+        QSemaphore held;
+        auto hold = [&] {
+            pool->start([&] {
+                held.release();
+                gate.acquire();
+            });
+            held.acquire();
+        };
+        const auto restore = qScopeGuard([&] {
+            gate.release(2);
+            pool->waitForDone();
+            pool->setMaxThreadCount(maxThreads);
+        });
+        auto &counting = backend.m_wordCountWatcher;
+        QSignalSpy counted(&counting, &QFutureWatcher<int>::finished);
+
+        // An edit made while a count runs gets one more count after it.
+        hold();
+        insert(7, QStringLiteral(" three"));
+        QTRY_VERIFY(counting.isRunning());
+        insert(13, QStringLiteral(" four"));
+        QTRY_VERIFY(!backend.m_wordCountTimer.isActive());
+        QCOMPARE(backend.wordCount(), 2);
+        gate.release();
+        QTRY_COMPARE(counted.count(), 2);
+        QCOMPARE(backend.wordCount(), 4);
+
+        // A file loaded while a count runs gets its own count, and the
+        // outdated one is dropped when it finishes. Loading counts on the
+        // worker too, so a long file opens without waiting on its count.
+        hold();
+        insert(18, QStringLiteral(" five"));
+        QTRY_VERIFY(counting.isRunning());
+        backend.loadDocumentText(QStringLiteral("alpha"));
+        gate.release();
+        QTRY_COMPARE(counted.count(), 4);
+        QCOMPARE(backend.wordCount(), 1);
+        // Neither outdated count was ever shown.
+        QCOMPARE(shown, QList<int>({2, 4, 1}));
+        QVERIFY(!counting.isRunning());
+        QVERIFY(!backend.m_wordCountTimer.isActive());
     }
 
     void normalizesLinks() {
