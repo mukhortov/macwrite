@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractTextDocumentLayout>
+#include <QColor>
 #include <QList>
 #include <QMarginsF>
 #include <QPointF>
@@ -52,6 +53,12 @@ public:
     using HangingIndentRule = std::function<int(const QTextBlock &)>;
     void setHangingIndentRule(HangingIndentRule rule);
 
+    // The colour behind a block, or none. Neighbouring blocks of one colour
+    // make one shape across the column and a little past it, through the
+    // space between their lines, with rounded ends.
+    using BlockBackgroundRule = std::function<QColor(const QTextBlock &)>;
+    void setBlockBackgroundRule(BlockBackgroundRule rule);
+
     int cursorWidth() const { return m_cursorWidth; }
     void setCursorWidth(int width) { m_cursorWidth = width; }
 
@@ -95,6 +102,7 @@ private:
     Hit hitTestBlock(const QTextBlock &block, const QPointF &point, int *position,
                      QTextLayout **layout, Qt::HitTestAccuracy accuracy) const;
     void updateSize();
+    void paintBlockBackground(QPainter *painter, const QTextBlock &block, const QColor &colour) const;
 
     // Where block 0 starts, past the padding and the frame's own margins.
     int originX() const;
@@ -110,6 +118,7 @@ private:
     } m_padding;
     int m_cursorWidth = 1;
     HangingIndentRule m_hangingIndentRule;
+    BlockBackgroundRule m_blockBackgroundRule;
     bool m_laidOut = false;
     // Each block's own height and widest line, and in the tree its height
     // plus the margin above it.

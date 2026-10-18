@@ -45,6 +45,8 @@ public:
     // hashes, a quote's ">", a list's marker and task box, and the spaces
     // around them. Its wrapped lines line up after them. None in fenced code.
     static int hangingIndentLength(const QTextBlock &block);
+    // Whether the block is fenced code, its fence lines included.
+    static bool isFencedCode(const QTextBlock &block);
     static QString linkUrlAt(const QString &text, int position);
 
     // Inline code spans, backticks included.
@@ -73,6 +75,8 @@ private:
     QTextCharFormat m_boldFormat;
     QTextCharFormat m_italicFormat;
     QTextCharFormat m_codeFormat;
+    // Fenced lines draw on the block's own background, so they have none.
+    QTextCharFormat m_fencedCodeFormat;
     QTextCharFormat m_fenceFormat;
     QTextCharFormat m_quoteFormat;
     QTextCharFormat m_linkFormat;

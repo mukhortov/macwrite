@@ -85,8 +85,11 @@ void MarkdownHighlighter::rebuildFormats() {
     if (!m_customCodeBackground.isEmpty())
         m_codeFormat.setBackground(QColor(m_customCodeBackground));
 
+    m_fencedCodeFormat = QTextCharFormat();
+    m_fencedCodeFormat.setForeground(text);
+
     // A fence recedes the way a heading's `#` does, over the panel it opens.
-    m_fenceFormat = m_codeFormat;
+    m_fenceFormat = m_fencedCodeFormat;
     m_fenceFormat.setForeground(marker);
 
     m_quoteFormat = QTextCharFormat();
@@ -108,7 +111,7 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
         const bool closing = closesFence(text, fence / 2 + 3,
                                          fence % 2 ? QLatin1Char('~') : QLatin1Char('`'));
         setCurrentBlockState(closing ? Prose : previous);
-        setFormat(0, text.length(), closing ? m_fenceFormat : m_codeFormat);
+        setFormat(0, text.length(), closing ? m_fenceFormat : m_fencedCodeFormat);
         return;
     }
 
@@ -418,10 +421,14 @@ QString MarkdownHighlighter::linkUrlAt(const QString &text, int position) {
     return {};
 }
 
+// A block's state says what follows its line, so a fence line, opening or
+// closing, is code too.
+bool MarkdownHighlighter::isFencedCode(const QTextBlock &block) {
+    return block.userState() >= InsideFence || block.previous().userState() >= InsideFence;
+}
+
 int MarkdownHighlighter::hangingIndentLength(const QTextBlock &block) {
-    // A block's state says what follows its line, so a fence line, opening
-    // or closing, is code too.
-    if (block.userState() >= InsideFence || block.previous().userState() >= InsideFence)
+    if (isFencedCode(block))
         return 0;
 
     const QString text = block.text();

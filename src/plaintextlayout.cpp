@@ -518,6 +518,12 @@ void PlainTextLayout::draw(QPainter *painter, const PaintContext &context) {
         const QRectF rect = layout->boundingRect().translated(position);
         if (clip.isValid() && rect.top() > clip.bottom())
             break;
+        // A block's background reaches down to the next block, past its text.
+        if (m_blockBackgroundRule) {
+            const QColor shade = m_blockBackgroundRule(block);
+            if (shade.isValid())
+                paintBlockBackground(painter, block, shade);
+        }
         if (clip.isValid() && rect.bottom() < clip.y())
             continue;
 
@@ -594,4 +600,59 @@ void PlainTextLayout::setHangingIndentRule(HangingIndentRule rule) {
         updateSize();
         emit update(QRectF(0, 0, qreal(INT_MAX), qreal(INT_MAX)));
     }
+}
+
+void PlainTextLayout::setBlockBackgroundRule(BlockBackgroundRule rule) {
+    m_blockBackgroundRule = std::move(rule);
+    emit update(QRectF(0, 0, qreal(INT_MAX), qreal(INT_MAX)));
+}
+
+// From halfway up the space above the block's text to halfway down the space
+// below it, so neighbours meet without a gap and the first and last lines sit
+// as far from the shape's edges; and past the column by a little on either
+// side, so the text does not touch them. The ends round off where the colour
+// starts and stops.
+void PlainTextLayout::paintBlockBackground(QPainter *painter, const QTextBlock &block,
+                                           const QColor &colour) const {
+    constexpr qreal reach = 10;
+    constexpr qreal radius = 6;
+    const int index = block.blockNumber();
+    if (index >= m_advances.size())
+        return;
+    const QRectF text = blockBoundingRect(block);
+    const QTextBlock previous = block.previous();
+    const QTextBlock next = block.next();
+    const qreal above = previous.isValid() ? text.top() - blockBoundingRect(previous).bottom()
+                                           : 0;
+    const qreal below = next.isValid()
+        ? blockBoundingRect(next).top() - text.bottom()
+        : real(originY() + heightAbove(index) + m_advances.at(index)) - text.bottom();
+    const qreal top = text.top() - above / 2;
+    const qreal bottom = text.bottom() + below / 2;
+    const qreal left = real(originX()) - reach;
+    const qreal right = real(qint64(originX()) + m_frame.contentsWidth) + reach;
+    const QRectF area(QPointF(left, top), QPointF(right, bottom));
+
+    const auto sameColour = [this, &colour](const QTextBlock &neighbour) {
+        return neighbour.isValid() && m_blockBackgroundRule(neighbour) == colour;
+    };
+    const bool roundTop = !sameColour(block.previous());
+    const bool roundBottom = !sameColour(block.next());
+
+    painter->save();
+    if (!roundTop && !roundBottom) {
+        painter->fillRect(area, colour);
+    } else {
+        QRectF shape = area;
+        if (!roundTop)
+            shape.setTop(area.top() - radius);
+        if (!roundBottom)
+            shape.setBottom(area.bottom() + radius);
+        painter->setClipRect(area, Qt::IntersectClip);
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(colour);
+        painter->drawRoundedRect(shape, radius, radius);
+    }
+    painter->restore();
 }

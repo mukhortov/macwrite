@@ -40,6 +40,11 @@ MarkdownEditor::MarkdownEditor(Backend *backend, QWidget *parent)
     m_layout = new PlainTextLayout(document());
     // A wrapped list item, quote or heading continues under its text.
     m_layout->setHangingIndentRule(&MarkdownHighlighter::hangingIndentLength);
+    // Fenced code sits on one panel, not a box behind each line's text.
+    m_layout->setBlockBackgroundRule([this](const QTextBlock &block) {
+        return MarkdownHighlighter::isFencedCode(block) ? QColor(m_backend->themeCodeBackground())
+                                                        : QColor();
+    });
     document()->setDocumentLayout(m_layout);
     setCursorWidth(caretWidth);
     document()->clearUndoRedoStacks();

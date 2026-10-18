@@ -3075,6 +3075,62 @@ private slots:
         QCOMPARE(foreground(listedFormats.at(4)), quote.name());
     }
 
+    // A fenced code block is one shape behind its lines, the column's width
+    // and a little more, through the space between its lines; not a box
+    // behind each line's text.
+    void paintsCodeBlocksAsOneShape() {
+        EditorFixture fixture;
+        fixture.window.resize(700, 600);
+        QVERIFY(fixture.show());
+        fixture.other->setFocus();
+        fixture.load(QStringLiteral("before\n```\ncode\nmore code here\n```\nafter"), 0);
+        MarkdownEditor *editor = fixture.editor;
+        QTextDocument *document = editor->document();
+        const QColor page(fixture.backend.themeBackground());
+        const QColor code(fixture.backend.themeCodeBackground());
+        QVERIFY(code.isValid() && code != page);
+
+        const QImage image = editor->viewport()->grab().toImage();
+        const auto rowOf = [&](int blockNumber) {
+            return editor->document()->documentLayout()->blockBoundingRect(
+                       document->findBlockByNumber(blockNumber))
+                .translated(0, -editor->verticalScrollBar()->value());
+        };
+        const qreal left = fixture.layout()->padding().left();
+        const qreal right = left + editor->lineWrapColumnOrWidth();
+        const auto at = [&image](qreal x, qreal y) {
+            return image.pixelColor(qRound(x), qRound(y)).name();
+        };
+
+        // Far right of a short code line, and between two code lines.
+        QCOMPARE(at(right - 3, rowOf(2).center().y()), code.name());
+        QCOMPARE(at(left + 3, (rowOf(2).bottom() + rowOf(3).top()) / 2), code.name());
+        // A little past the column on either side, but not far past it.
+        QCOMPARE(at(left - 5, rowOf(3).center().y()), code.name());
+        QCOMPARE(at(right + 5, rowOf(3).center().y()), code.name());
+        QCOMPARE(at(left - 16, rowOf(3).center().y()), page.name());
+        // Around the block, the page.
+        QCOMPARE(at(right - 3, rowOf(0).center().y()), page.name());
+        QCOMPARE(at(right - 3, rowOf(5).center().y()), page.name());
+    }
+
+    void leavesFencedLinesWithoutTheirOwnBackground() {
+        QTextDocument document;
+        document.setPlainText(QStringLiteral("```\ncode `span`\n```\nprose `span`"));
+        MarkdownHighlighter highlighter(&document);
+        highlighter.setTheme(true, "#101010", "#eeeeee", "#5584aa", "#23372b");
+        highlighter.rehighlight();
+        for (int number = 0; number < 3; ++number) {
+            for (const QTextLayout::FormatRange &range : document.findBlockByNumber(number).layout()->formats())
+                QVERIFY2(!range.format.hasProperty(QTextFormat::BackgroundBrush), qPrintable(QString::number(number)));
+        }
+        // Inline code keeps its own.
+        bool spanShaded = false;
+        for (const QTextLayout::FormatRange &range : document.findBlockByNumber(3).layout()->formats())
+            spanShaded = spanShaded || range.format.hasProperty(QTextFormat::BackgroundBrush);
+        QVERIFY(spanShaded);
+    }
+
     void composesTextWithAnInputMethod() {
         EditorFixture fixture;
         QVERIFY(fixture.show());
@@ -3359,16 +3415,18 @@ private slots:
         QCOMPARE(stateOf(3), int(MarkdownHighlighter::Prose));
         QCOMPARE(stateOf(4), int(MarkdownHighlighter::Prose));
 
-        // The fenced line sits on the code panel, with nothing italic and no
-        // marker hidden.
+        // The fenced line sits on the code panel the layout paints behind the
+        // block, with nothing italic and no marker hidden.
+        QVERIFY(MarkdownHighlighter::isFencedCode(document.findBlockByNumber(2)));
+        QVERIFY(!MarkdownHighlighter::isFencedCode(document.findBlockByNumber(4)));
         const QList<QTextLayout::FormatRange> fenced =
             document.findBlockByNumber(2).layout()->formats();
         QCOMPARE(fenced.size(), 1);
         QCOMPARE(fenced.constFirst().length, document.findBlockByNumber(2).text().length());
-        QVERIFY(fenced.constFirst().format.background().style() != Qt::NoBrush);
+        QCOMPARE(fenced.constFirst().format.background().style(), Qt::NoBrush);
         for (const QTextLayout::FormatRange &range : fenced) {
             QVERIFY(!range.format.fontItalic());
-            QVERIFY(range.format.foreground().color() != range.format.background().color());
+            QCOMPARE(range.format.foreground().color().name(), QStringLiteral("#eeeeee"));
         }
 
         const QList<QTextLayout::FormatRange> prose =
