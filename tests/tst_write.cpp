@@ -1144,6 +1144,9 @@ private slots:
         QVERIFY(undoes(QStringLiteral("abc"), 1, -1, [](QTextCursor &cursor) {
             MarkdownEdits::replaceRange(cursor, 0, 3, QStringLiteral("x\r\ny"), std::pair{0, 1});
         }));
+        QVERIFY(undoes(QStringLiteral("- a\n- b\n    - c"), 4, 15, [](QTextCursor &cursor) {
+            MarkdownEdits::nestListItems(cursor, false, [](int) { return false; });
+        }));
     }
 
     void searchMatchesStepAndFollow() {
@@ -1374,6 +1377,142 @@ private slots:
         fixture.load(QStringLiteral("one"), 3);
         QTest::keyClick(fixture.editor, Qt::Key_Return, Qt::ShiftModifier);
         QCOMPARE(fixture.text(), QStringLiteral("one\n"));
+    }
+
+    void nestsListItemsOnTab() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        MarkdownEditor *editor = fixture.editor;
+        editor->setFocus();
+        QVERIFY(editor->hasFocus());
+
+        const auto text = [&] { return fixture.text(); };
+        const auto caret = [&] { return editor->textCursor().position(); };
+        const auto load = [&](const QString &content, int position) { fixture.load(content, position); };
+        // Drags the selection from the caret to the position.
+        const auto selectTo = [&](int position) {
+            QTextCursor cursor = editor->textCursor();
+            cursor.setPosition(position, QTextCursor::KeepAnchor);
+            editor->setTextCursor(cursor);
+        };
+        const auto tabKey = [&] { QTest::keyClick(editor, Qt::Key_Tab); };
+        const auto backtabKey = [&] { QTest::keyClick(editor, Qt::Key_Backtab, Qt::ShiftModifier); };
+        const auto selection = [&] {
+            const QTextCursor cursor = editor->textCursor();
+            return QStringLiteral("%1-%2@%3").arg(cursor.selectionStart())
+                                             .arg(cursor.selectionEnd())
+                                             .arg(cursor.position());
+        };
+
+        // An item nests four spaces under the item above, the caret rides
+        // along, and Shift+Tab puts it back.
+        load(QStringLiteral("- one\n- two"), 11);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("- one\n    - two"));
+        QCOMPARE(caret(), 15);
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("- one\n- two"));
+        QCOMPARE(caret(), 11);
+
+        // One undo takes a nesting back.
+        tabKey();
+        editor->undo();
+        QCOMPARE(text(), QStringLiteral("- one\n- two"));
+
+        // The same step nests under ordered markers, the empty one Return
+        // leaves included, and Shift+Tab steps back out one level.
+        load(QStringLiteral("1. one"), 6);
+        QTest::keyClick(editor, Qt::Key_Return);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("1. one\n    2. "));
+        load(QStringLiteral("10. a\n- b"), 9);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("10. a\n    - b"));
+        load(QStringLiteral("1. a\n    - b\n        - c"), 24);
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("1. a\n    - b\n    - c"));
+
+        // The first item nests all the same, an outermost one has nowhere to
+        // go, and a tab-indented one comes out like a spaced one.
+        load(QStringLiteral("- a"), 3);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("    - a"));
+        backtabKey();
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("- a"));
+        load(QStringLiteral("- a\n\t- b"), 8);
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n- b"));
+
+        // A selection moves the items it touches together, keeping their
+        // depth and its own direction, but not a line it only reaches the
+        // start of.
+        load(QStringLiteral("- a\n- b\n    - c\n- d"), 16);
+        selectTo(4);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n    - b\n        - c\n- d"));
+        QCOMPARE(selection(), QStringLiteral("8-24@8"));
+
+        // Shift+Tab lifts every line by one step, no further than the
+        // shallowest line goes, so the nesting within the selection is kept.
+        load(QStringLiteral("- a\n  - b\n    - c"), 6);
+        selectTo(17);
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n- b\n  - c"));
+        load(QStringLiteral("- a\n    - b\n  - c"), 6);
+        selectTo(17);
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n  - b\n- c"));
+        load(QStringLiteral("    - a\n    - b"), 0);
+        selectTo(10);
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n- b"));
+        QCOMPARE(selection(), QStringLiteral("0-4@4"));
+        load(QStringLiteral("- a\n \t- b\n    - c"), 4);
+        selectTo(15);
+        backtabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n- b\n- c"));
+
+        // Indented continuation lines move with their item, but a paragraph
+        // at the margin is no item, so Tab leaves the list alone.
+        load(QStringLiteral("- a\n- b\n  more"), 4);
+        selectTo(14);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n    - b\n      more"));
+        load(QStringLiteral("- a\n- b\n\nParagraph"), 4);
+        selectTo(18);
+        tabKey();
+        QVERIFY(!text().contains(QStringLiteral("    ")));
+
+        // A fence indented under an item moves with it, but one that starts
+        // the selection, or a selection running from a list into a code
+        // fence, is left alone.
+        load(QStringLiteral("- a\n- b\n  ```\n  code\n  ```"), 4);
+        selectTo(26);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n    - b\n      ```\n      code\n      ```"));
+        load(QStringLiteral("  ```\n  - x\n  ```"), 0);
+        selectTo(17);
+        tabKey();
+        QVERIFY(!text().contains(QStringLiteral("    ")));
+        load(QStringLiteral("- a\n  ```\n  - x\n  ```"), 0);
+        selectTo(14);
+        tabKey();
+        QVERIFY(!text().contains(QStringLiteral("    ")));
+
+        // Outside a list, on a rule, and inside a code fence, Tab types a tab.
+        load(QStringLiteral("plain"), 5);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("plain\t"));
+        load(QStringLiteral("\n- a"), 0);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("\t\n- a"));
+        load(QStringLiteral("- a\n* * *"), 9);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("- a\n* * *\t"));
+        load(QStringLiteral("```\n- a\n```"), 7);
+        tabKey();
+        QCOMPARE(text(), QStringLiteral("```\n- a\t\n```"));
     }
 
     void breaksLinesAfterInlineBackticks() {

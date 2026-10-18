@@ -205,6 +205,16 @@ void MarkdownEditor::keyPressEvent(QKeyEvent *event) {
             break;
         setTextCursor(cursor);
         return;
+    case Qt::Key_Tab:
+    case Qt::Key_Backtab:
+        if (command
+                || !MarkdownEdits::nestListItems(cursor, event->key() == Qt::Key_Backtab || shift,
+                                                 [this](int position) {
+                                                     return m_backend->insideFence(position);
+                                                 }))
+            break;
+        setTextCursor(cursor);
+        return;
     case Qt::Key_Left:
     case Qt::Key_Right:
         if (command || shift)

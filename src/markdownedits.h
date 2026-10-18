@@ -2,6 +2,7 @@
 
 #include <QString>
 
+#include <functional>
 #include <optional>
 #include <utility>
 
@@ -48,5 +49,12 @@ void smartReturn(QTextCursor &cursor, bool softBreak, bool insideFence);
 // Backspace right after a paragraph break takes the whole break. False when
 // there is none to take and the editor's own Backspace should run.
 bool deleteParagraphBreakBehind(QTextCursor &cursor);
+
+// Tab nests the list items the caret or selection touches four spaces
+// deeper, and Shift+Tab lifts them back out by the same step, keeping the
+// nesting among them. False, for the editor to type a tab, unless the lines
+// start at an item and hold only items, their indented lines and blanks,
+// with neither end inside fenced code.
+bool nestListItems(QTextCursor &cursor, bool outdent, const std::function<bool(int)> &insideFence);
 
 }

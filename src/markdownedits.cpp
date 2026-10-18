@@ -5,6 +5,8 @@
 #include <QTextCursor>
 #include <QTextDocument>
 
+#include <algorithm>
+
 namespace {
 
 // The text between two positions, with the document's paragraph and line
@@ -35,6 +37,35 @@ bool isBlank(const QString &text) {
 
 void replaceSelection(QTextCursor &cursor, const QString &text) {
     MarkdownEdits::replaceRange(cursor, cursor.selectionStart(), cursor.selectionEnd(), text);
+}
+
+bool hasText(const QString &line) {
+    return std::any_of(line.cbegin(), line.cend(), [](QChar c) { return !c.isSpace(); });
+}
+
+// "* * *" and "- - -" are rules, not items.
+bool isListItem(const QString &line) {
+    static const QRegularExpression item(QStringLiteral("^[ \\t]*(?:[-+*]|\\d+[.)])[ \\t]"));
+    static const QRegularExpression rule(QStringLiteral("^ {0,3}([-*])([ \\t]*\\1){2,}[ \\t]*$"));
+    return item.match(line).hasMatch() && !rule.match(line).hasMatch();
+}
+
+// The spaces and tabs a line starts with.
+int indentLength(const QString &line) {
+    int length = 0;
+    while (length < line.size() && (line.at(length) == QLatin1Char(' ') || line.at(length) == QLatin1Char('\t')))
+        ++length;
+    return length;
+}
+
+// How many columns a line's indent spans, a tab running to the next
+// four-column stop.
+int indentColumns(const QString &line) {
+    const int length = indentLength(line);
+    int column = 0;
+    for (int i = 0; i < length; ++i)
+        column = line.at(i) == QLatin1Char('\t') ? column + 4 - column % 4 : column + 1;
+    return column;
 }
 
 }
@@ -275,6 +306,62 @@ bool deleteParagraphBreakBehind(QTextCursor &cursor) {
     }
 
     replaceRange(cursor, start, position, QString());
+    return true;
+}
+
+bool nestListItems(QTextCursor &cursor, bool outdent, const std::function<bool(int)> &insideFence) {
+    QTextDocument *document = cursor.document();
+    const int selectionStart = cursor.selectionStart();
+    const int selectionEnd = cursor.selectionEnd();
+    // A selection that ends at the start of a line leaves that line be.
+    const int start = lineStart(document, selectionStart);
+    const int end = lineEnd(document, qMax(start, selectionEnd - 1));
+    const QStringList lines = textBetween(document, start, end).split(QLatin1Char('\n'));
+
+    // The lines start at an item and hold only lines that belong to one:
+    // other items, blanks, and indented lines. A fence indented under an item
+    // moves along with it whole; a selection that starts or ends inside code
+    // would split it.
+    QStringList filled;
+    for (const QString &line : lines) {
+        if (hasText(line))
+            filled.append(line);
+    }
+    const bool strayParagraph = std::any_of(filled.cbegin(), filled.cend(), [](const QString &line) {
+        return !line.at(0).isSpace() && !isListItem(line);
+    });
+    if (filled.isEmpty() || !isListItem(filled.first()) || strayParagraph || insideFence(start)
+            || insideFence(end))
+        return false;
+
+    // Every line moves by the same step, so the nesting among them is kept.
+    // Four spaces nest under any marker up to "99.", and Shift+Tab lifts no
+    // further than the shallowest line can go.
+    int step = 4;
+    if (outdent) {
+        for (const QString &line : std::as_const(filled))
+            step = qMin(step, indentColumns(line));
+        step = -step;
+    }
+    if (step == 0)
+        return true;
+    QStringList moved;
+    for (const QString &line : lines) {
+        moved.append(hasText(line)
+                         ? QString(indentColumns(line) + step, QLatin1Char(' ')) + line.mid(indentLength(line))
+                         : line);
+    }
+    const QString nested = moved.join(QLatin1Char('\n'));
+
+    // Neither end of the selection leaves its line, even when the indent it
+    // sat in is gone, and the selection keeps its direction.
+    const int from = qMax(start, selectionStart + int(moved.first().size() - lines.first().size()));
+    const int lastStart = start + int(nested.size() - moved.last().size());
+    const int to = qMax(qMax(from, lastStart), selectionEnd + int(nested.size()) - (end - start));
+    const bool forward = cursor.position() == selectionEnd;
+    replaceRange(cursor, start, end, nested);
+    cursor.setPosition(forward ? from : to);
+    cursor.setPosition(forward ? to : from, QTextCursor::KeepAnchor);
     return true;
 }
 
