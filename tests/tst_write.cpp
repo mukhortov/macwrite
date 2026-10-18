@@ -18,7 +18,9 @@
 #include <QJSValue>
 #include <QAction>
 #include <QMenuBar>
+#include <QPainter>
 #include <QRandomGenerator>
+#include <QTextFrame>
 
 #include <functional>
 #include "cli.h"
@@ -537,6 +539,112 @@ private slots:
             const QString difference = layoutDifference(&qt, &ours, step % 50 == 49);
             QVERIFY2(difference.isEmpty(),
                      qPrintable(QStringLiteral("step %1, %2: %3").arg(step).arg(action, difference)));
+        }
+    }
+
+    // An editor leaves the painting to its document's layout, so ours has to
+    // paint what Qt's would: the text, the selection, highlights and the caret.
+    void plainTextLayoutDrawsLikeQt() {
+        QFont font;
+        font.setPixelSize(17);
+        QTextDocument qt;
+        QTextDocument ours;
+        ours.setDocumentLayout(new PlainTextLayout(&ours));
+        for (QTextDocument *document : {&qt, &ours}) {
+            setUpLayoutDocument(document, font, 480, 4, false);
+            new MarkdownHighlighter(document);
+            fillLayoutDocument(document, layoutSample());
+        }
+
+        const QString text = qt.toPlainText();
+        const int arabic = int(text.indexOf(QStringLiteral("هذا")));
+        const int hebrew = int(text.indexOf(QStringLiteral("עולם")));
+        QVERIFY(arabic > 0 && hebrew > 0);
+        const int from = qt.findBlockByNumber(2).position() + 5;
+        const int to = qt.findBlockByNumber(5).position() + 3;
+        const QSizeF size = qt.documentLayout()->documentSize();
+        const QRectF middleThird(0, size.height() / 3, size.width(), size.height() / 3);
+
+        struct Case {
+            const char *name;
+            int cursor;
+            QList<std::tuple<int, int, QColor>> selections;
+            QRectF clip;
+        };
+        const QList<Case> cases = {
+            {"no caret", -1, {}, {}},
+            {"caret at the start", 0, {}, {}},
+            {"caret in Arabic", arabic + 2, {}, {}},
+            {"caret in Hebrew", hebrew + 1, {}, {}},
+            {"caret at the end", qt.characterCount() - 1, {}, {}},
+            {"selection", to, {{from, to, QColor(QStringLiteral("#264f78"))}}, {}},
+            {"highlights", -1,
+             {{10, 14, QColor(QStringLiteral("#725b18"))}, {40, 47, QColor(QStringLiteral("#b36b20"))}},
+             {}},
+            {"middle third", from, {{from, to, QColor(QStringLiteral("#264f78"))}}, middleThird},
+        };
+
+        for (const Case &test : cases) {
+            QList<QImage> images;
+            for (QTextDocument *document : {&qt, &ours}) {
+                QAbstractTextDocumentLayout::PaintContext context;
+                context.cursorPosition = test.cursor;
+                context.palette.setColor(QPalette::Text, QColor(QStringLiteral("#d6d6d6")));
+                context.palette.setColor(QPalette::Highlight, QColor(QStringLiteral("#264f78")));
+                context.clip = test.clip;
+                for (const auto &[start, end, color] : test.selections) {
+                    QAbstractTextDocumentLayout::Selection selection;
+                    selection.cursor = QTextCursor(document);
+                    selection.cursor.setPosition(start);
+                    selection.cursor.setPosition(end, QTextCursor::KeepAnchor);
+                    selection.format.setBackground(color);
+                    context.selections.append(selection);
+                }
+                QImage image(size.toSize() + QSize(1, 1), QImage::Format_ARGB32_Premultiplied);
+                image.fill(Qt::white);
+                QPainter painter(&image);
+                document->documentLayout()->draw(&painter, context);
+                painter.end();
+                images.append(image);
+            }
+            QVERIFY2(images.at(0) == images.at(1), test.name);
+        }
+    }
+
+    // The editor centres its column and leaves room above and below it with
+    // padding, which moves the lines without breaking them again.
+    void movesBlocksWithoutLayingThemOutWhenPaddingChanges() {
+        QFont font;
+        font.setPixelSize(16);
+        QTextDocument qt;
+        QTextDocument ours;
+        auto *layout = new PlainTextLayout(&ours);
+        ours.setDocumentLayout(layout);
+        QString text;
+        for (int copy = 0; copy < 5; ++copy)
+            text += layoutSample() + QLatin1Char('\n');
+        for (QTextDocument *document : {&qt, &ours}) {
+            setUpLayoutDocument(document, font, 600, 0, false);
+            fillLayoutDocument(document, text);
+        }
+
+        // Qt's layout gets the same space as root frame margins, around a page
+        // wider by the horizontal part of it, so the lines break alike.
+        const QList<QMarginsF> paddings = {QMarginsF(40, 0, 0, 0), QMarginsF(0, 0, 40, 0),
+                                           QMarginsF(0, 80, 40, 220), QMarginsF(17, 42, 23, 220)};
+        for (const QMarginsF &padding : paddings) {
+            QTextFrameFormat format = qt.rootFrame()->frameFormat();
+            format.setLeftMargin(padding.left());
+            format.setTopMargin(padding.top());
+            format.setRightMargin(padding.right());
+            format.setBottomMargin(padding.bottom());
+            qt.rootFrame()->setFrameFormat(format);
+            qt.setTextWidth(600 + padding.left() + padding.right());
+
+            layout->setPadding(padding);
+            QCOMPARE(layout->lastLayoutBlockCount(), 0);
+            const QString difference = layoutDifference(&qt, &ours, true);
+            QVERIFY2(difference.isEmpty(), qPrintable(difference));
         }
     }
 

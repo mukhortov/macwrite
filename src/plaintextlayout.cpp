@@ -59,6 +59,8 @@ PlainTextLayout::Frame PlainTextLayout::currentFrame() const {
     frame.top = rounded(fixed(format.topMargin())) + border + padding;
     frame.bottom = rounded(fixed(format.bottomMargin())) + border + padding;
     frame.left = leftMargin + border + padding;
+    frame.leftMargin = leftMargin;
+    frame.rightMargin = rightMargin;
     frame.marginWidth = 2 * (border + padding) + leftMargin + rightMargin;
     const qreal pageWidth = qMax(qreal(0), document()->pageSize().width());
     frame.contentsWidth = fixed(format.width().value(pageWidth)) - frame.marginWidth;
@@ -180,12 +182,12 @@ void PlainTextLayout::layoutAll() {
     m_advances.resize(count);
     m_widest = 0;
 
-    qint64 y = m_frame.top;
+    qint64 y = originY();
     int index = 0;
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next(), ++index) {
         const auto [height, width] = layoutBlock(block);
         const int margin = marginAbove(block);
-        block.layout()->setPosition(QPointF(real(m_frame.left), real(y + margin)));
+        block.layout()->setPosition(QPointF(real(originX()), real(y + margin)));
         m_heights[index] = height;
         m_widths[index] = width;
         m_advances[index] = block.isVisible() ? margin + height : 0;
@@ -244,9 +246,17 @@ int PlainTextLayout::blockIndexAt(qint64 y) const {
     return int(qMin(index, count - 1));
 }
 
+int PlainTextLayout::originX() const {
+    return m_padding.left + m_frame.left;
+}
+
+qint64 PlainTextLayout::originY() const {
+    return qint64(m_padding.top) + m_frame.top;
+}
+
 QPointF PlainTextLayout::blockPosition(const QTextBlock &block) const {
-    const qint64 y = m_frame.top + heightAbove(block.blockNumber()) + marginAbove(block);
-    return QPointF(real(m_frame.left), real(y));
+    const qint64 y = originY() + heightAbove(block.blockNumber()) + marginAbove(block);
+    return QPointF(real(originX()), real(y));
 }
 
 void PlainTextLayout::documentChanged(int from, int charsRemoved, int charsAdded) {
@@ -338,8 +348,8 @@ void PlainTextLayout::documentChanged(int from, int charsRemoved, int charsAdded
 void PlainTextLayout::updateSize() {
     const qint64 contents = heightAbove(int(m_advances.size()));
     const int width = qMax(m_frame.contentsWidth, qMax(0, m_widest));
-    const QSizeF size(real(width + m_frame.marginWidth),
-                      real(m_frame.top + contents + m_frame.bottom));
+    const QSizeF size(real(qint64(m_padding.left) + width + m_frame.marginWidth + m_padding.right),
+                      real(originY() + contents + m_frame.bottom + m_padding.bottom));
     if (size != m_size) {
         m_size = size;
         emit documentSizeChanged(size);
@@ -425,7 +435,7 @@ int PlainTextLayout::hitTest(const QPointF &point, Qt::HitTestAccuracy accuracy)
         return accuracy == Qt::ExactHit ? -1 : 0;
 
     const QPointF at(real(fixed(point.x())), real(fixed(point.y())));
-    QTextBlock block = document()->findBlockByNumber(blockIndexAt(fixed(at.y()) - m_frame.top));
+    QTextBlock block = document()->findBlockByNumber(blockIndexAt(fixed(at.y()) - originY()));
     // A line taller than its share of the page reaches into the block below.
     for (QTextBlock previous = block.previous(); previous.isValid(); previous = previous.previous()) {
         if (at.y() > blockBoundingRect(previous).bottom())
@@ -469,30 +479,98 @@ int PlainTextLayout::hitTest(const QPointF &point, Qt::HitTestAccuracy accuracy)
     return qMax(0, position);
 }
 
-// Qt Quick draws through its scene graph and never calls this; it is here for
-// anything else that paints the document.
+// QTextDocumentLayoutPrivate::drawFlow and drawBlock for one frame of plain
+// blocks. QTextEdit leaves painting the text, its selections and the caret to
+// the layout.
 void PlainTextLayout::draw(QPainter *painter, const PaintContext &context) {
     if (!m_laidOut || !canLayout() || m_advances.isEmpty())
         return;
 
-    painter->save();
-    painter->setPen(context.palette.color(QPalette::Text));
+    // Qt keeps the text within the root frame less its side margins.
+    const QRectF frameClip = QRectF(QPointF(0, 0), m_size)
+        .adjusted(real(m_padding.left + m_frame.leftMargin), 0,
+                  -real(m_padding.right + m_frame.rightMargin), 0);
     const QRectF &clip = context.clip;
-    QTextBlock block = document()->begin();
-    if (clip.isValid())
-        block = document()->findBlockByNumber(qMax(0, blockIndexAt(fixed(clip.top()) - m_frame.top) - 1));
+    const QRectF textClip = clip.isValid() ? (clip & frameClip) : frameClip;
+    // A line taller than its share of the page reaches into the block below.
+    QTextBlock block = clip.isValid()
+        ? document()->findBlockByNumber(qMax(0, blockIndexAt(fixed(clip.top()) - originY()) - 1))
+        : document()->begin();
     for (; block.isValid(); block = block.next()) {
-        const QRectF rect = blockBoundingRect(block);
+        if (!block.isVisible())
+            continue;
+        QTextLayout *layout = block.layout();
+        const QPointF position = blockPosition(block);
+        if (layout->position() != position)
+            layout->setPosition(position);
+        const QRectF rect = layout->boundingRect().translated(position);
         if (clip.isValid() && rect.top() > clip.bottom())
             break;
-        QList<QTextLayout::FormatRange> selections;
-        for (const Selection &selection : context.selections) {
-            const int start = qMax(selection.cursor.selectionStart(), block.position());
-            const int end = qMin(selection.cursor.selectionEnd(), block.position() + block.length());
-            if (start < end)
-                selections.append({start - block.position(), end - start, selection.format});
+        if (clip.isValid() && rect.bottom() < clip.y())
+            continue;
+
+        const QTextBlockFormat format = block.blockFormat();
+        const QBrush background = format.background();
+        if (background != Qt::NoBrush) {
+            QRectF backgroundRect = rect;
+            if (document()->pageSize().width() <= 0)
+                backgroundRect.setRight(m_size.width() - real(m_padding.right + m_frame.rightMargin));
+            painter->fillRect(backgroundRect, background);
         }
-        block.layout()->draw(painter, QPointF(), selections, clip);
+
+        const int blockStart = block.position();
+        const int blockLength = block.length();
+        QList<QTextLayout::FormatRange> selections;
+        for (const Selection &range : context.selections) {
+            const int start = range.cursor.selectionStart() - blockStart;
+            const int end = range.cursor.selectionEnd() - blockStart;
+            if (start < blockLength && end > 0 && end > start) {
+                selections.append({start, end - start, range.format});
+            } else if (!range.cursor.hasSelection()
+                       && range.format.hasProperty(QTextFormat::FullWidthSelection)
+                       && block.contains(range.cursor.position())) {
+                // A full-width selection takes the cursor's whole line.
+                const QTextLine line = layout->lineForTextPosition(range.cursor.position() - blockStart);
+                QTextLayout::FormatRange whole{line.textStart(), line.textLength(), range.format};
+                if (whole.start + whole.length == blockLength - 1)
+                    ++whole.length;
+                selections.append(whole);
+            }
+        }
+
+        const QPen pen = painter->pen();
+        painter->setPen(context.palette.color(QPalette::Text));
+        layout->draw(painter, QPointF(), selections, textClip);
+        // A position below -1 counts back from the end of the preedit text.
+        if ((context.cursorPosition >= blockStart && context.cursorPosition < blockStart + blockLength)
+                || (context.cursorPosition < -1 && !layout->preeditAreaText().isEmpty())) {
+            const int caret = context.cursorPosition < -1
+                ? layout->preeditAreaPosition() - (context.cursorPosition + 2)
+                : context.cursorPosition - blockStart;
+            layout->drawCursor(painter, QPointF(), caret, m_cursorWidth);
+        }
+        painter->setPen(pen);
     }
-    painter->restore();
+}
+
+void PlainTextLayout::setPadding(const QMarginsF &padding) {
+    const Padding fixedPadding{fixed(padding.left()), fixed(padding.top()),
+                               fixed(padding.right()), fixed(padding.bottom())};
+    if (fixedPadding.left == m_padding.left && fixedPadding.top == m_padding.top
+            && fixedPadding.right == m_padding.right && fixedPadding.bottom == m_padding.bottom)
+        return;
+    m_padding = fixedPadding;
+    if (!m_laidOut || !canLayout())
+        return;
+
+    // Blocks find their place from the padding when asked, so nothing is
+    // laid out again.
+    m_lastLayoutBlockCount = 0;
+    updateSize();
+    emit update(QRectF(0, 0, qreal(INT_MAX), qreal(INT_MAX)));
+}
+
+QMarginsF PlainTextLayout::padding() const {
+    return QMarginsF(real(m_padding.left), real(m_padding.top),
+                     real(m_padding.right), real(m_padding.bottom));
 }

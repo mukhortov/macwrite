@@ -2,6 +2,7 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QList>
+#include <QMarginsF>
 #include <QPointF>
 #include <QSizeF>
 
@@ -25,6 +26,8 @@ class QTextLayout;
 // device (Qt Quick sets none).
 class PlainTextLayout : public QAbstractTextDocumentLayout {
     Q_OBJECT
+    // QTextEdit asks any layout for the caret's width by this name.
+    Q_PROPERTY(int cursorWidth READ cursorWidth WRITE setCursorWidth)
 
 public:
     explicit PlainTextLayout(QTextDocument *document);
@@ -35,6 +38,15 @@ public:
     QSizeF documentSize() const override;
     QRectF frameBoundingRect(QTextFrame *frame) const override;
     QRectF blockBoundingRect(const QTextBlock &block) const override;
+
+    // Space around the document that is not the document's: it moves the
+    // lines without breaking them again, and an undo cannot take it back as
+    // it could a root frame margin.
+    void setPadding(const QMarginsF &padding);
+    QMarginsF padding() const;
+
+    int cursorWidth() const { return m_cursorWidth; }
+    void setCursorWidth(int width) { m_cursorWidth = width; }
 
     // How many blocks the last change laid out, for tests and benchmarks.
     int lastLayoutBlockCount() const { return m_lastLayoutBlockCount; }
@@ -50,9 +62,13 @@ private:
         int left = 0;
         int contentsWidth = 0;
         int marginWidth = 0;
+        // Qt keeps the text within the frame less these.
+        int leftMargin = 0;
+        int rightMargin = 0;
         bool operator!=(const Frame &other) const {
             return top != other.top || bottom != other.bottom || left != other.left
-                || contentsWidth != other.contentsWidth || marginWidth != other.marginWidth;
+                || contentsWidth != other.contentsWidth || marginWidth != other.marginWidth
+                || leftMargin != other.leftMargin || rightMargin != other.rightMargin;
         }
     };
 
@@ -73,7 +89,19 @@ private:
                      QTextLayout **layout, Qt::HitTestAccuracy accuracy) const;
     void updateSize();
 
+    // Where block 0 starts, past the padding and the frame's own margins.
+    int originX() const;
+    qint64 originY() const;
+
     Frame m_frame;
+    // In 26.6 fixed point, as the frame.
+    struct Padding {
+        int left = 0;
+        int top = 0;
+        int right = 0;
+        int bottom = 0;
+    } m_padding;
+    int m_cursorWidth = 1;
     bool m_laidOut = false;
     // Each block's own height and widest line, and in the tree its height
     // plus the margin above it.
