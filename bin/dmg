@@ -1,0 +1,124 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+BUILD_DIR="$ROOT/build-dmg"
+APP="$BUILD_DIR/Write.app"
+VERSION="$(sed -n 's/^VERSION = //p' "$ROOT/write.pro")"
+DMG="$BUILD_DIR/Write-$VERSION.dmg"
+
+if [ -z "$VERSION" ]; then
+  echo "No VERSION in write.pro" >&2
+  exit 1
+fi
+
+BREW="$(brew --prefix)"
+MACDEPLOYQT="$(brew --prefix qt)/bin/macdeployqt"
+QT_PLUGINS="$BREW/share/qt/plugins"
+
+# The plugins Write uses. macdeployqt on its own would copy every plugin
+# Homebrew's qt installs, Qt Quick and the virtual keyboard among them, and the
+# PDF image format from qtwebengine, which keeps to a Qt release of its own.
+PLUGINS="
+platforms/libqcocoa
+styles/libqmacstyle
+iconengines/libqsvgicon
+imageformats/libqgif
+imageformats/libqicns
+imageformats/libqico
+imageformats/libqjpeg
+imageformats/libqmacheif
+imageformats/libqmacjp2
+imageformats/libqsvg
+imageformats/libqtga
+imageformats/libqtiff
+imageformats/libqwbmp
+imageformats/libqwebp
+"
+
+# Every Mach-O file in the bundle, one per line.
+binaries() {
+  find "$APP" -type f | while IFS= read -r file; do
+    case "$(file -b "$file")" in
+      Mach-O*) echo "$file" ;;
+    esac
+  done
+}
+
+rpaths() {
+  otool -l "$1" | awk '$1 == "cmd" && $2 == "LC_RPATH" { getline; getline; print $2 }'
+}
+
+# A clean build, since a new VERSION in write.pro doesn't rebuild on its own.
+rm -rf "$BUILD_DIR"
+BUILD_DIR="$BUILD_DIR" "$ROOT/bin/build"
+
+for plugin in $PLUGINS; do
+  mkdir -p "$APP/Contents/PlugIns/$(dirname "$plugin")"
+  cp -L "$QT_PLUGINS/$plugin.dylib" "$APP/Contents/PlugIns/$plugin.dylib"
+done
+
+# Copies in the Qt frameworks and other Homebrew libraries the app and its
+# plugins load, and points them at each other inside the bundle.
+"$MACDEPLOYQT" "$APP" -no-plugins -no-codesign -libpath="$BREW/lib"
+
+# macdeployqt writes qt.conf only when it deploys the plugins itself. Without
+# it, Qt would look for plugins where Homebrew keeps them.
+printf '[Paths]\nPlugins = PlugIns\n' > "$APP/Contents/Resources/qt.conf"
+
+# Clear what macdeployqt leaves pointing at Homebrew: the install names of some
+# libraries it copied, and run paths to where Homebrew built them.
+binaries | while IFS= read -r file; do
+  id="$(otool -D "$file" | tail -n +2)"
+  case "$id" in
+    "$BREW"/*)
+      install_name_tool -id "@executable_path/../Frameworks/${file#"$APP/Contents/Frameworks/"}" "$file"
+      ;;
+  esac
+  rpaths "$file" | while IFS= read -r rpath; do
+    case "$rpath" in
+      "$BREW"/*) install_name_tool -delete_rpath "$rpath" "$file" ;;
+    esac
+  done
+done
+
+leftovers="$(binaries | while IFS= read -r file; do
+  { otool -L "$file" | tail -n +2; rpaths "$file"; } |
+    grep -F "$BREW/" | sed "s|^|${file#"$APP/"}: |"
+done)"
+if [ -n "$leftovers" ]; then
+  echo "These still load from $BREW:" >&2
+  echo "$leftovers" >&2
+  exit 1
+fi
+
+# Ad hoc by default. With a Developer ID, sign for the hardened runtime, which
+# notarization requires.
+if [ -n "${WRITE_SIGNING_IDENTITY:-}" ]; then
+  codesign --force --deep --options runtime --timestamp \
+    --sign "$WRITE_SIGNING_IDENTITY" "$APP"
+else
+  codesign --force --deep --sign - "$APP"
+fi
+codesign --verify --deep --strict "$APP"
+
+STAGING="$BUILD_DIR/dmg"
+mkdir "$STAGING"
+ditto "$APP" "$STAGING/Write.app"
+ln -s /Applications "$STAGING/Applications"
+hdiutil create -volname Write -srcfolder "$STAGING" -format UDZO -ov "$DMG"
+rm -rf "$STAGING"
+
+# Notarize when given a notarytool keychain profile, made with
+# xcrun notarytool store-credentials.
+if [ -n "${WRITE_NOTARY_PROFILE:-}" ]; then
+  if [ -z "${WRITE_SIGNING_IDENTITY:-}" ]; then
+    echo "Notarizing needs WRITE_SIGNING_IDENTITY too." >&2
+    exit 1
+  fi
+  codesign --sign "$WRITE_SIGNING_IDENTITY" --timestamp "$DMG"
+  xcrun notarytool submit "$DMG" --keychain-profile "$WRITE_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG"
+fi
+
+echo "Made $DMG"

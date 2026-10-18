@@ -2,7 +2,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-BUILD_DIR="$ROOT/build"
+BUILD_DIR="${BUILD_DIR:-$ROOT/build}"
 
 if command -v qmake6 >/dev/null 2>&1; then
   QMAKE=qmake6

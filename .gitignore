@@ -1,5 +1,6 @@
 /build/
 /build-tests/
+/build-dmg/
 *.o
 *.moc
 moc_*.cpp

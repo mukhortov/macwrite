@@ -18,6 +18,25 @@ bin/install
 `APPLICATIONS` to install it somewhere else. `bin/build` only builds it, and
 `bin/test` runs the tests. The app loads Qt from Homebrew, so keep `qt` installed.
 
+## Making a disk image
+
+```sh
+bin/dmg
+```
+
+`bin/dmg` builds Write afresh in `build-dmg`, copies Qt and the other Homebrew
+libraries it loads into the app, and makes `build-dmg/Write-VERSION.dmg` with
+the version from `write.pro`. That app runs without Homebrew, but it needs the
+macOS release it was built on or a later one, because Homebrew builds Qt for
+the macOS it runs on; see `macos/deployment-target.pri`.
+
+The app is signed ad hoc, so macOS blocks it the first time it opens from a
+download. Allow it with Open Anyway in System Settings › Privacy & Security.
+To sign with a Developer ID and the hardened runtime instead, set
+`WRITE_SIGNING_IDENTITY` to the identity's name. Set `WRITE_NOTARY_PROFILE`
+too, to a keychain profile from `xcrun notarytool store-credentials`, to
+notarize the disk image and staple the ticket to it.
+
 ## Opening files
 
 Open Markdown files from Finder with Open With → Write, or from Terminal with
