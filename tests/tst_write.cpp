@@ -2147,6 +2147,11 @@ private slots:
         QSignalSpy saveDialogSpy(&backend, &Backend::saveDialogRequested);
         QVERIFY(fixture.choose(QStringLiteral("Save As…")));
         QCOMPARE(saveDialogSpy.count(), 1);
+        // The Save As sheet holds the commands until it is dismissed.
+        auto *savePanel = fixture.window.findChild<QFileDialog *>(QStringLiteral("savePanel"));
+        QVERIFY(savePanel);
+        QVERIFY(!fixture.command(QStringLiteral("Open…"))->isEnabled());
+        static_cast<QDialog *>(savePanel)->reject();
         QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
         QVERIFY(fixture.choose(QStringLiteral("Open…")));
         QCOMPARE(openDialogSpy.count(), 1);
