@@ -20,6 +20,10 @@
 #include <QMenuBar>
 #include <QPainter>
 #include <QRandomGenerator>
+#include <QLineEdit>
+#include <QVBoxLayout>
+#include <QScrollBar>
+#include <QInputMethodEvent>
 #include <QTextFrame>
 
 #include <functional>
@@ -28,6 +32,7 @@
 
 #include "appeventfilter.h"
 #include "backend.h"
+#include "markdowneditor.h"
 #include "markdownedits.h"
 #include "markdownhighlighter.h"
 #include "plaintextlayout.h"
@@ -237,6 +242,54 @@ struct EditCase {
             cursor.deletePreviousChar();
     }
 };
+
+// A shown MarkdownEditor on a Backend of its own, under a field that can take
+// the focus from it.
+struct EditorFixture {
+    Backend backend;
+    QWidget window;
+    MarkdownEditor *editor = nullptr;
+    QLineEdit *other = nullptr;
+
+    EditorFixture() {
+        editor = new MarkdownEditor(&backend, &window);
+        other = new QLineEdit(&window);
+        auto *column = new QVBoxLayout(&window);
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(0);
+        column->addWidget(other);
+        column->addWidget(editor, 1);
+        window.resize(1280, 820);
+    }
+    bool show() {
+        window.show();
+        window.activateWindow();
+        return QTest::qWaitForWindowActive(&window);
+    }
+    void load(const QString &text, int caret) {
+        editor->setPlainText(text);
+        QTextCursor cursor = editor->textCursor();
+        cursor.setPosition(caret);
+        editor->setTextCursor(cursor);
+    }
+    QString text() const { return editor->toPlainText(); }
+    PlainTextLayout *layout() const {
+        return qobject_cast<PlainTextLayout *>(editor->document()->documentLayout());
+    }
+};
+
+// Whether an image holds a pixel of exactly this colour.
+static bool holdsColour(const QImage &image, const QColor &colour) {
+    const QRgb wanted = colour.rgb();
+    for (int y = 0; y < image.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            if ((line[x] | 0xff000000) == wanted)
+                return true;
+        }
+    }
+    return false;
+}
 
 class WriteTest : public QObject {
     Q_OBJECT
@@ -674,54 +727,6 @@ private slots:
         }
     }
 
-    // Typing near the top of a long document lays out the line it changed,
-    // not every line below it.
-    void typingInALongDocumentLaysOutOnlyTheEditedLine() {
-        QTemporaryDir directory;
-        QVERIFY(directory.isValid());
-        const QString path = directory.filePath(QStringLiteral("long.md"));
-        QByteArray contents;
-        for (int line = 0; line < 50000; ++line)
-            contents += "Line " + QByteArray::number(line) + " has words enough to wrap once at this width, or so.\n";
-        writeFile(path, contents);
-
-        Backend backend;
-        QScopedPointer<QObject> editor(makeEditor(backend));
-        QVERIFY(editor);
-        editor->setProperty("width", 400);
-        backend.open(QUrl::fromLocalFile(path));
-        auto *quickDocument = qobject_cast<QQuickTextDocument *>(
-            editor->property("textDocument").value<QObject *>());
-        QTextDocument *document = quickDocument->textDocument();
-        auto *layout = qobject_cast<PlainTextLayout *>(document->documentLayout());
-        QVERIFY(layout);
-        const qreal height = layout->documentSize().height();
-
-        QTextCursor cursor(document);
-        cursor.setPosition(4);
-        QElapsedTimer timer;
-        timer.start();
-        for (int key = 0; key < 200; ++key) {
-            cursor.insertText(QStringLiteral("x"));
-            QCOMPARE(layout->lastLayoutBlockCount(), 1);
-        }
-        cursor.insertText(QStringLiteral("\n"));
-        QCOMPARE(layout->lastLayoutBlockCount(), 2);
-        QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
-        QVERIFY(layout->documentSize().height() > height);
-
-        // The last line of text is still where the editor draws it and finds it.
-        const QTextBlock lastLine = document->lastBlock().previous();
-        const int last = lastLine.position() + lastLine.length() - 1;
-        QRectF rect;
-        QVERIFY(QMetaObject::invokeMethod(editor.data(), "positionToRectangle",
-                                          Q_RETURN_ARG(QRectF, rect), Q_ARG(int, last)));
-        QCOMPARE(rect.bottom(), layout->blockBoundingRect(lastLine).bottom());
-        int found = -1;
-        QVERIFY(QMetaObject::invokeMethod(editor.data(), "positionAt", Q_RETURN_ARG(int, found),
-                                          Q_ARG(qreal, rect.left() + 1), Q_ARG(qreal, rect.center().y())));
-        QCOMPARE(found, last);
-    }
 
     // The widget editor asks Backend in C++ types, not QML's maps and lists.
     void answersEditorsInPlainTypes() {
@@ -1056,6 +1061,192 @@ private slots:
                              [](const SearchHighlight &match) { return match.current; }));
         QCOMPARE(everything.size(), 2000);
         QVERIFY(everything.first().current);
+    }
+
+    void centresTheColumnAtTheTextSize() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        MarkdownEditor *editor = fixture.editor;
+        const auto column = [editor]() {
+            return MarkdownEditor::columnWidth(QFontMetricsF(editor->font()).averageCharWidth(),
+                                               editor->width());
+        };
+        const auto checkCentred = [&]() {
+            const QMarginsF padding = fixture.layout()->padding();
+            const int width = editor->viewport()->width();
+            QCOMPARE(editor->lineWrapColumnOrWidth(), column());
+            QCOMPARE(int(padding.left()), 24 + qRound((width - 48 - column()) / 2.0));
+            QVERIFY(qAbs(padding.left() - padding.right()) <= 1);
+            QCOMPARE(padding.top(), 42.0);
+            QCOMPARE(padding.bottom(), 220.0);
+        };
+        QCOMPARE(editor->font().pixelSize(), 20);
+        checkCentred();
+
+        fixture.backend.increaseTextSize();
+        QCOMPARE(editor->fontPixelSize(), 22);
+        QCOMPARE(editor->font().pixelSize(), 22);
+        checkCentred();
+        fixture.backend.decreaseTextSize();
+        fixture.backend.decreaseTextSize();
+        QCOMPARE(editor->font().pixelSize(), 18);
+        checkCentred();
+        fixture.backend.resetTextSize();
+    }
+
+    void keepsTextColumnInsideNarrowWindows() {
+        EditorFixture fixture;
+        fixture.window.resize(394, 600);
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("A line long enough to need wrapping in a window this narrow, "
+                                    "and then some more words to be sure of it."), 0);
+        MarkdownEditor *editor = fixture.editor;
+        QCOMPARE(editor->lineWrapColumnOrWidth(), 394 - 48);
+        QVERIFY(fixture.layout()->padding().left() >= 0);
+        const QRectF block = editor->document()->documentLayout()->blockBoundingRect(
+            editor->document()->firstBlock());
+        QVERIFY(block.right() <= editor->viewport()->width());
+    }
+
+    // A window wider than the column only moves it, however long the document.
+    void resizesAWideWindowWithoutLayingOut() {
+        EditorFixture fixture;
+        fixture.window.resize(2000, 800);
+        QVERIFY(fixture.show());
+        QString text;
+        for (int line = 0; line < 20000; ++line)
+            text += QStringLiteral("Line %1 of a long document.\n").arg(line);
+        fixture.load(text, 0);
+        const qreal left = fixture.layout()->padding().left();
+        fixture.window.resize(2100, 800);
+        QTRY_VERIFY(fixture.layout()->padding().left() > left);
+        QCOMPARE(fixture.layout()->lastLayoutBlockCount(), 0);
+    }
+
+    void showsThePlaceholderOnlyWhileEmptyAndUnfocused() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.other->setFocus();
+        QTRY_VERIFY(fixture.other->hasFocus());
+        const QColor muted(fixture.backend.darkMode() ? QStringLiteral("#909191")
+                                                     : QStringLiteral("#aeb1b5"));
+        const auto shown = [&]() { return holdsColour(fixture.editor->viewport()->grab().toImage(), muted); };
+        QVERIFY(shown());
+
+        fixture.editor->setFocus();
+        QTRY_VERIFY(fixture.editor->hasFocus());
+        QVERIFY(!shown());
+
+        QTest::keyClick(fixture.editor, Qt::Key_A);
+        fixture.other->setFocus();
+        QTRY_VERIFY(fixture.other->hasFocus());
+        QVERIFY(!shown());
+    }
+
+    void keepsTheCaretTwoLinesInsideTheView() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        QString text;
+        for (int line = 0; line < 300; ++line)
+            text += QStringLiteral("line %1\n").arg(line);
+        fixture.load(text, 0);
+        QTextCursor cursor = fixture.editor->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        fixture.editor->setTextCursor(cursor);
+        const int margin = 2 * fixture.editor->fontPixelSize();
+        QVERIFY(fixture.editor->cursorRect().bottom() <= fixture.editor->viewport()->height() - margin);
+        QVERIFY(fixture.editor->cursorRect().top() >= 0);
+    }
+
+    void selectsWithTheMouseAndShiftArrows() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.editor->setFocus();
+        fixture.load(QStringLiteral("one two three"), 0);
+        MarkdownEditor *editor = fixture.editor;
+        const auto pointAt = [editor](int position) {
+            QTextCursor cursor(editor->document());
+            cursor.setPosition(position);
+            return editor->cursorRect(cursor).center();
+        };
+        QTest::mousePress(editor->viewport(), Qt::LeftButton, {}, pointAt(4));
+        QTest::mouseMove(editor->viewport(), pointAt(7));
+        QTest::mouseRelease(editor->viewport(), Qt::LeftButton, {}, pointAt(7));
+        QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("two"));
+
+        fixture.load(QStringLiteral("one two three"), 0);
+        QTest::keyClick(editor, Qt::Key_Right, Qt::ShiftModifier);
+        QTest::keyClick(editor, Qt::Key_Right, Qt::ShiftModifier);
+        QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("on"));
+    }
+
+    void composesTextWithAnInputMethod() {
+        EditorFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.editor->setFocus();
+        fixture.load(QStringLiteral("ab"), 1);
+
+        QInputMethodEvent preedit(QStringLiteral("か"), {});
+        QApplication::sendEvent(fixture.editor, &preedit);
+        const QRect caret = fixture.editor->cursorRect();
+        QVERIFY(caret.isValid());
+        QVERIFY(fixture.editor->viewport()->rect().intersects(caret));
+        QVERIFY(!fixture.editor->viewport()->grab().isNull());
+
+        QInputMethodEvent commit;
+        commit.setCommitString(QStringLiteral("漢"));
+        QApplication::sendEvent(fixture.editor, &commit);
+        QCOMPARE(fixture.text(), QStringLiteral("a漢b"));
+        fixture.editor->undo();
+        QCOMPARE(fixture.text(), QStringLiteral("ab"));
+    }
+
+    // Typing near the top of a long document lays out the line it changed,
+    // not every line below it.
+    void typingInALongDocumentLaysOutOnlyTheEditedLine() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("long.md"));
+        QByteArray contents;
+        for (int line = 0; line < 50000; ++line)
+            contents += "Line " + QByteArray::number(line) + " has words enough to wrap once at this width, or so.\n";
+        writeFile(path, contents);
+
+        EditorFixture fixture;
+        fixture.window.resize(500, 700);
+        QVERIFY(fixture.show());
+        fixture.backend.open(QUrl::fromLocalFile(path));
+        MarkdownEditor *editor = fixture.editor;
+        editor->setFocus();
+        PlainTextLayout *layout = fixture.layout();
+        QVERIFY(layout);
+        const qreal height = layout->documentSize().height();
+
+        QTextCursor cursor = editor->textCursor();
+        cursor.setPosition(4);
+        editor->setTextCursor(cursor);
+        QElapsedTimer timer;
+        timer.start();
+        for (int key = 0; key < 200; ++key) {
+            QTest::keyClick(editor, Qt::Key_X);
+            QCOMPARE(layout->lastLayoutBlockCount(), 1);
+        }
+        QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
+        QVERIFY(layout->documentSize().height() > height);
+
+        // The last line of text is still where the editor draws it and finds it.
+        QTextDocument *document = editor->document();
+        const QTextBlock lastLine = document->lastBlock().previous();
+        QTextCursor last(document);
+        last.setPosition(lastLine.position() + lastLine.length() - 1);
+        editor->setTextCursor(last);
+        const QRect rect = editor->cursorRect();
+        const qreal bottom = layout->blockBoundingRect(lastLine).bottom()
+            - editor->verticalScrollBar()->value();
+        QVERIFY2(qAbs(rect.bottom() + 1 - bottom) <= 1,
+                 qPrintable(QStringLiteral("%1 %2").arg(rect.bottom()).arg(bottom)));
+        QCOMPARE(editor->cursorForPosition(QPoint(rect.left() + 1, rect.center().y())).position(),
+                 last.position());
     }
 
     void findsLinesWithoutCopyingTheText() {
@@ -3103,32 +3294,6 @@ private slots:
         QCOMPARE(saveSpy.count(), 1);
     }
 
-    void scalesTextWithTheTextSize() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 20);
-
-        backend.increaseTextSize();
-        QCOMPARE(window->property("editorFontPixelSize").toInt(), 22);
-        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 22);
-
-        backend.decreaseTextSize();
-        backend.decreaseTextSize();
-        QCOMPARE(window->property("editorFontPixelSize").toInt(), 18);
-        QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 18);
-        backend.resetTextSize();
-    }
 
     void stepsTextSize() {
         Backend backend;
@@ -3223,39 +3388,6 @@ private slots:
         backend.resetTextSize();
     }
 
-    void keepsTextColumnInsideNarrowWindows() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        QObject *viewport = editor->parent();
-        QVERIFY(viewport);
-
-        // A resize reaches the window through its platform window, so the
-        // bindings only see the new width once the events are delivered.
-        const int minimumWidth = window->property("minimumWidth").toInt();
-        window->setProperty("width", minimumWidth);
-        QCoreApplication::processEvents();
-        QCOMPARE(window->property("width").toInt(), minimumWidth);
-        QVERIFY(editor->property("x").toInt() > 0);
-
-        // A window can still be set narrower than the minimum it asks for.
-        window->setProperty("width", 394);
-        QCoreApplication::processEvents();
-        QCOMPARE(window->property("width").toInt(), 394);
-        QVERIFY(editor->property("width").toInt()
-                <= viewport->property("width").toInt());
-        QVERIFY(editor->property("x").toInt() >= 0);
-    }
 
     void shortcutsDialogHasNoBindingLoop() {
         const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
