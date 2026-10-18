@@ -2210,8 +2210,8 @@ private slots:
             });
         };
 
-        // Esc cancels: the window stays and the file is untouched. (The
-        // native alert adds Cmd+. for Cancel and Cmd+D for Don't Save.)
+        // Esc cancels: the window stays and the file is untouched. (Cmd+D for
+        // Don't Save has a test of its own.)
         QVERIFY(ask());
         QTest::keyClick(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")), Qt::Key_Escape);
         QTRY_VERIFY(!sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
@@ -2846,6 +2846,85 @@ private slots:
         QVERIFY(libraries.contains(QStringLiteral("QtWidgets")));
         QVERIFY2(!libraries.contains(QStringLiteral("QtQuick")), qPrintable(libraries));
         QVERIFY2(!libraries.contains(QStringLiteral("QtQml")), qPrintable(libraries));
+    }
+
+    // macOS shows an application-modal file panel only from exec(): shown
+    // otherwise it never appears and still blocks every window. So the Open
+    // panel stands on its own, and the window's commands wait for it.
+    void opensTheOpenPanelOnItsOwn() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        QVERIFY(fixture.choose(QStringLiteral("Open…")));
+        QFileDialog *panel = nullptr;
+        QTRY_VERIFY((panel = fixture.window.findChild<QFileDialog *>(QStringLiteral("openPanel")))
+                    && panel->isVisible());
+        QCOMPARE(panel->windowModality(), Qt::NonModal);
+        QVERIFY(!fixture.window.commandsEnabled());
+        static_cast<QDialog *>(panel)->reject();
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+    }
+
+    // One question at a time: a close or a file's outside change that comes
+    // while another question waits does not stack a second sheet on it.
+    void asksOneQuestionAtATime() {
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.load(QStringLiteral("unsaved"));
+        QSignalSpy cancelled(&fixture.window, &MainWindow::closeCancelled);
+        const auto visibleSheets = [&fixture]() {
+            int shown = 0;
+            for (QMessageBox *box : fixture.window.findChildren<QMessageBox *>())
+                shown += box->isVisible();
+            return shown;
+        };
+
+        // A close while Save As is up is refused, and a quit waiting on it is
+        // called off.
+        QVERIFY(fixture.choose(QStringLiteral("Save As…")));
+        auto *savePanel = fixture.window.findChild<QFileDialog *>(QStringLiteral("savePanel"));
+        QVERIFY(savePanel);
+        QVERIFY(!fixture.window.close());
+        QCoreApplication::processEvents();
+        QCOMPARE(visibleSheets(), 0);
+        QTRY_COMPARE(cancelled.count(), 1);
+        static_cast<QDialog *>(savePanel)->reject();
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+
+        // An outside change while the unsaved sheet is up waits for its answer.
+        fixture.window.close();
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        emit fixture.backend.externalChangeDetected(false, true);
+        QCoreApplication::processEvents();
+        QCOMPARE(visibleSheets(), 1);
+        QVERIFY(!sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+        sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"))->button(QMessageBox::Cancel)->click();
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("externalChangeSheet")));
+
+        // And a close while that sheet is up is refused too.
+        QVERIFY(!fixture.window.close());
+        QCoreApplication::processEvents();
+        QCOMPARE(visibleSheets(), 1);
+        QTest::keyClick(sheet(&fixture.window, QStringLiteral("externalChangeSheet")), Qt::Key_Escape);
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+        QCOMPARE(fixture.text(), QStringLiteral("unsaved"));
+        fixture.backend.discardRecovery();
+    }
+
+    // Cmd+D answers Don't Save, as in every Mac app.
+    void discardsWithCommandD() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("discard.md"));
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        fixture.backend.saveAs(QUrl::fromLocalFile(path));
+        fixture.load(QStringLiteral("not wanted"));
+        fixture.window.close();
+        QTRY_VERIFY(sheet(&fixture.window, QStringLiteral("unsavedChangesSheet")));
+        QMessageBox *asked = sheet(&fixture.window, QStringLiteral("unsavedChangesSheet"));
+        QTest::keyClick(asked, Qt::Key_D, Qt::ControlModifier);
+        QTRY_VERIFY(!fixture.window.isVisible());
+        QCOMPARE(readFile(path), QByteArray());
     }
 
     void composesTextWithAnInputMethod() {

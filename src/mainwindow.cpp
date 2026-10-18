@@ -6,6 +6,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDialog>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -14,11 +15,38 @@
 #include <QPushButton>
 #include <QShortcut>
 #include <QStatusBar>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "backend.h"
 #include "findbar.h"
 #include "markdowneditor.h"
+
+namespace {
+
+// Presses a sheet's Don't Save button for Cmd+D. The key reaches the sheet
+// from whichever of its buttons has the focus, as none of them takes it.
+class DontSaveKey : public QObject {
+public:
+    DontSaveKey(QAbstractButton *button, QObject *parent) : QObject(parent), m_button(button) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::KeyPress) {
+            const auto *key = static_cast<QKeyEvent *>(event);
+            if (key->key() == Qt::Key_D && key->modifiers() == Qt::ControlModifier) {
+                m_button->click();
+                return true;
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QAbstractButton *m_button;
+};
+
+}
 
 MainWindow::MainWindow(Backend *backend, QWidget *parent)
     : QMainWindow(parent), m_backend(backend) {
@@ -187,12 +215,22 @@ bool MainWindow::commandsEnabled() const {
 }
 
 // A dialog is only taken down without an answer along with the window, so
-// its answer is what ends the wait.
+// its answer is what ends the wait. An outside change that came meanwhile is
+// asked about next, once the answer has been carried out.
 void MainWindow::waitOn(QDialog *dialog) {
     m_waitingOn.insert(dialog);
     connect(dialog, &QDialog::finished, this, [this, dialog]() {
         m_waitingOn.remove(dialog);
         updateCommands();
+        if (m_waitingOn.isEmpty() && m_deferredChange) {
+            QTimer::singleShot(0, this, [this]() {
+                if (!m_waitingOn.isEmpty() || !m_deferredChange || !isVisible())
+                    return;
+                const auto [deleted, locallyModified] = *m_deferredChange;
+                m_deferredChange.reset();
+                askAboutExternalChange(deleted, locallyModified);
+            });
+        }
     });
     updateCommands();
 }
@@ -262,6 +300,15 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
+    // Another question is open, so it is answered first: a close now would
+    // stack a second sheet on it. A quit waiting on this window is called
+    // off once the window manager has begun to wait.
+    const bool askingAlready = m_unsavedSheet && m_waitingOn.contains(m_unsavedSheet);
+    if (!m_closeConfirmed && !m_waitingOn.isEmpty() && !askingAlready) {
+        event->ignore();
+        QMetaObject::invokeMethod(this, &MainWindow::closeCancelled, Qt::QueuedConnection);
+        return;
+    }
     if (m_closeConfirmed || !m_backend->modified()) {
         QMainWindow::closeEvent(event);
         emit closed();
@@ -297,10 +344,13 @@ void MainWindow::askAboutUnsavedChanges() {
     sheet->setText(QStringLiteral("Do you want to save the changes you made to “%1”?")
                        .arg(m_backend->fileName()));
     sheet->setInformativeText(QStringLiteral("Your changes will be lost if you don't save them."));
-    // macOS names the Discard button "Don't Save" and gives it Cmd+D.
+    // macOS names the Discard button "Don't Save".
     sheet->setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
     sheet->setDefaultButton(QMessageBox::Save);
     sheet->setEscapeButton(QMessageBox::Cancel);
+    // Qt draws this sheet itself, and gives Don't Save Cmd+Delete; every Mac
+    // app answers it with Cmd+D.
+    sheet->installEventFilter(new DontSaveKey(sheet->button(QMessageBox::Discard), sheet));
     connect(sheet, &QMessageBox::finished, this, [this, sheet]() {
         const QMessageBox::StandardButton answer = sheet->standardButton(sheet->clickedButton());
         if (answer == QMessageBox::Discard) {
@@ -361,8 +411,12 @@ void MainWindow::showOpenPanel() {
     panel->setAcceptMode(QFileDialog::AcceptOpen);
     panel->setFileMode(QFileDialog::ExistingFile);
     panel->setNameFilters(documentFilters);
-    panel->setWindowModality(Qt::ApplicationModal);
+    // macOS shows an application-modal panel only from exec(); shown any
+    // other way it never appears, and still blocks every window. Without a
+    // modality the panel stands on its own, as the Open panel of a Mac app does.
+    panel->setWindowModality(Qt::NonModal);
     connect(panel, &QFileDialog::urlSelected, this, &MainWindow::requestOpen);
+    waitOn(panel);
     panel->show();
 }
 
@@ -386,6 +440,10 @@ void MainWindow::showSavePanel(const QUrl &suggestedUrl) {
 void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
     if (m_changeSheet && m_waitingOn.contains(m_changeSheet))
         return;
+    if (!m_waitingOn.isEmpty()) {
+        m_deferredChange = std::pair{deleted, locallyModified};
+        return;
+    }
 
     auto *sheet = new QMessageBox(this);
     sheet->setObjectName(QStringLiteral("externalChangeSheet"));

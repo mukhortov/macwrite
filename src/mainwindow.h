@@ -6,6 +6,9 @@
 #include <QSet>
 #include <QUrl>
 
+#include <optional>
+#include <utility>
+
 #include <functional>
 
 class Backend;
@@ -90,4 +93,7 @@ private:
     // never an auto-save that lands meanwhile.
     bool m_awaitingPendingSave = false;
     bool m_closeConfirmed = false;
+    // An outside change reported while another question was open: deleted,
+    // and changed here too.
+    std::optional<std::pair<bool, bool>> m_deferredChange;
 };
