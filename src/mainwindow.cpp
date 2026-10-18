@@ -506,15 +506,21 @@ void MainWindow::askAboutExternalChange(bool deleted, bool locallyModified) {
     sheet->open();
 }
 
-// The Fonts panel sets only the family; the size is the text size's.
+// The Fonts panel sets only the family; the size is the text size's. It is
+// live, as macOS's is: AppKit's panel has no OK button, and its close button
+// reads as Cancel, so the family applies as the writer picks it.
 void MainWindow::showFontsPanel() {
     if (m_fontsPanel && m_waitingOn.contains(m_fontsPanel))
         return;
     auto *panel = new QFontDialog(QFont(m_backend->editorFont()), this);
     panel->setObjectName(QStringLiteral("fontsPanel"));
     panel->setAttribute(Qt::WA_DeleteOnClose);
-    connect(panel, &QFontDialog::fontSelected, m_backend,
+    panel->setOption(QFontDialog::NoButtons);
+    connect(panel, &QFontDialog::currentFontChanged, m_backend,
             [this](const QFont &font) { m_backend->setEditorFont(font.family()); });
+    // AppKit leaves no window key once its panel closes; the writer goes on
+    // typing in this one.
+    connect(panel, &QDialog::finished, this, &QWidget::activateWindow);
     connect(panel, &QDialog::finished, m_editor, qOverload<>(&QWidget::setFocus));
     m_fontsPanel = panel;
     waitOn(panel);

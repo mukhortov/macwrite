@@ -1,12 +1,13 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <QFont>
-#include <QFontDatabase>
 #include <QApplication>
+#include <QDir>
 #include <QUrl>
 
 #include "appeventfilter.h"
 #include "backend.h"
 #include "cli.h"
+#include "macfonts.h"
 #include "systemtheme.h"
 #include "windowmanager.h"
 
@@ -25,10 +26,11 @@ int main(int argc, char *argv[]) {
     app.setApplicationName(QStringLiteral("write"));
     app.setApplicationVersion(QStringLiteral(WRITE_VERSION));
 
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Regular.ttf"));
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Italic.ttf"));
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Bold.ttf"));
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-BoldItalic.ttf"));
+    // Write's own font, from the bundle.
+    const QDir fonts(QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/Fonts"));
+    for (const QString &file : fonts.entryList({QStringLiteral("*.ttf")}, QDir::Files))
+        MacFonts::addApplicationFont(fonts.filePath(file));
+
     // Settings land in the bundle's own preferences, com.mukhortov.write, and
     // drafts under Application Support/mukhortov/write, clear of any other
     // app called Write.

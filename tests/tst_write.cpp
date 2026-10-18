@@ -31,6 +31,8 @@
 #include "findbar.h"
 
 #include "appeventfilter.h"
+#include "macfonts.h"
+#include "macfontspanel.h"
 #include "backend.h"
 #include "macwindow.h"
 #include "mainwindow.h"
@@ -324,6 +326,23 @@ struct WindowFixture {
         return true;
     }
 };
+
+// Write's own font, added as the app adds it from its bundle, once a run:
+// CoreText takes each file only once.
+static bool addWritesOwnFont() {
+    static const bool added = [] {
+        const QDir fonts(QFINDTESTDATA("../fonts"));
+        const QStringList files = fonts.entryList({QStringLiteral("*.ttf")}, QDir::Files);
+        if (files.size() != 4)
+            return false;
+        for (const QString &file : files) {
+            if (!MacFonts::addApplicationFont(fonts.filePath(file)))
+                return false;
+        }
+        return true;
+    }();
+    return added;
+}
 
 // The window's sheet of this name once it is up, or nothing.
 static QMessageBox *sheet(QWidget *window, const QString &name) {
@@ -2378,11 +2397,61 @@ private slots:
         QVERIFY(panel);
         QTRY_VERIFY(panel->isVisible());
         QCOMPARE(panel->currentFont().family(), QStringLiteral("Menlo"));
+        // The panel is live, as macOS's is: the text takes the family as the
+        // writer picks it, and closing the panel keeps it.
         panel->setCurrentFont(QFont(QStringLiteral("Monaco")));
-        panel->accept();
         QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
         QCOMPARE(fixture.editor()->font().family(), QStringLiteral("Monaco"));
+        panel->reject();
+        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
         QTRY_VERIFY(fixture.editor()->hasFocus());
+        fixture.backend.setEditorFont(before);
+    }
+
+    // The same with AppKit's own Fonts panel, which has no OK button: only
+    // its close button puts it away.
+    void choosesTheEditorFontFromTheMacFontsPanel() {
+        if (QGuiApplication::platformName() != QLatin1String("cocoa"))
+            QSKIP("The Fonts panel is AppKit's; run on the Cocoa platform.");
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        const QString before = fixture.backend.editorFont();
+        fixture.backend.setEditorFont(QStringLiteral("Menlo"));
+        QVERIFY(fixture.choose(QStringLiteral("Font…")));
+        QTRY_VERIFY(MacFontsPanel::isVisible());
+        MacFontsPanel::choose(QStringLiteral("Monaco"));
+        QTRY_COMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
+        MacFontsPanel::close();
+        QTRY_VERIFY(!MacFontsPanel::isVisible());
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+        QCOMPARE(fixture.backend.editorFont(), QStringLiteral("Monaco"));
+        QTRY_VERIFY(fixture.editor()->hasFocus());
+        fixture.backend.setEditorFont(before);
+    }
+
+    // Write's own font is AppKit's as well as Qt's, so the Fonts panel offers
+    // it alongside the system's.
+    void addsWritesOwnFontForQtAndAppKit() {
+        QVERIFY(addWritesOwnFont());
+        QVERIFY(QFontDatabase::hasFamily(Backend::defaultEditorFont()));
+        QVERIFY(MacFontsPanel::lists(Backend::defaultEditorFont()));
+    }
+
+    // AppKit's panel reports its own choice as it closes: with Write's font
+    // unknown to it, that was the system's, which took over the text.
+    void keepsWritesOwnFontThroughTheMacFontsPanel() {
+        if (QGuiApplication::platformName() != QLatin1String("cocoa"))
+            QSKIP("The Fonts panel is AppKit's; run on the Cocoa platform.");
+        QVERIFY(addWritesOwnFont());
+        WindowFixture fixture;
+        QVERIFY(fixture.show());
+        const QString before = fixture.backend.editorFont();
+        fixture.backend.setEditorFont(Backend::defaultEditorFont());
+        QVERIFY(fixture.choose(QStringLiteral("Font…")));
+        QTRY_VERIFY(MacFontsPanel::isVisible());
+        MacFontsPanel::close();
+        QTRY_VERIFY(fixture.window.commandsEnabled());
+        QCOMPARE(fixture.backend.editorFont(), Backend::defaultEditorFont());
         fixture.backend.setEditorFont(before);
     }
 
@@ -2847,6 +2916,17 @@ private slots:
         QVERIFY(libraries.contains(QStringLiteral("QtWidgets")));
         QVERIFY2(!libraries.contains(QStringLiteral("QtQuick")), qPrintable(libraries));
         QVERIFY2(!libraries.contains(QStringLiteral("QtQml")), qPrintable(libraries));
+    }
+
+    // The bundle carries Write's own font as files, where AppKit as well as
+    // Qt can read it, with the font's licence beside it.
+    void bundlesWritesOwnFont() {
+        const QString resources = QFINDTESTDATA("../build/Write.app/Contents/Resources");
+        if (resources.isEmpty())
+            QSKIP("Build the app with bin/build first.");
+        const QDir fonts(resources + QStringLiteral("/Fonts"));
+        QCOMPARE(fonts.entryList({QStringLiteral("*.ttf")}, QDir::Files).size(), 4);
+        QVERIFY(fonts.exists(QStringLiteral("OFL.txt")));
     }
 
     // macOS shows an application-modal file panel only from exec(): shown

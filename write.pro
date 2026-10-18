@@ -19,6 +19,7 @@ HEADERS += \
     src/backend.h \
     src/cli.h \
     src/findbar.h \
+    src/macfonts.h \
     src/macwindow.h \
     src/mainwindow.h \
     src/markdowneditor.h \
@@ -42,7 +43,11 @@ SOURCES += \
     src/systemtheme.cpp \
     src/windowmanager.cpp
 
-OBJECTIVE_SOURCES += src/macwindow.mm
-LIBS += -framework AppKit
+OBJECTIVE_SOURCES += src/macfonts.mm src/macwindow.mm
+LIBS += -framework AppKit -framework CoreText
 
-RESOURCES += src/resources.qrc
+# Write's own font travels as files, which AppKit's Fonts panel can read as
+# well as Qt, with its licence.
+FONTS.files = $$files(fonts/*.ttf) fonts/OFL.txt
+FONTS.path = Contents/Resources/Fonts
+QMAKE_BUNDLE_DATA += FONTS
