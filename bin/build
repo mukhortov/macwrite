@@ -4,7 +4,10 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT/build}"
 
-if command -v qmake6 >/dev/null 2>&1; then
+# QMAKE picks another Qt, as bin/dmg does for Qt's own binaries.
+if [ -n "${QMAKE:-}" ]; then
+  :
+elif command -v qmake6 >/dev/null 2>&1; then
   QMAKE=qmake6
 elif command -v qmake >/dev/null 2>&1; then
   QMAKE=qmake
@@ -19,7 +22,7 @@ cd "$BUILD_DIR"
 "$QMAKE" "$ROOT/write.pro"
 make -j"$(sysctl -n hw.ncpu)"
 
-# The bundle loads Qt from where Homebrew installed it. Sign it ad hoc so the
+# The bundle loads Qt from where it is installed. Sign it ad hoc so the
 # bundle's resources are sealed along with the binary the linker signed.
 codesign --force --sign - Write.app
 

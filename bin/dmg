@@ -17,13 +17,20 @@ if [ -n "${WRITE_NOTARY_PROFILE:-}" ] && [ -z "${WRITE_SIGNING_IDENTITY:-}" ]; t
   exit 1
 fi
 
-BREW="$(brew --prefix)"
-MACDEPLOYQT="$(brew --prefix qt)/bin/macdeployqt"
-QT_PLUGINS="$BREW/share/qt/plugins"
+# Qt's own macOS binaries, not Homebrew's. Homebrew builds Qt and the
+# libraries it loads for the macOS it runs on, so an app made from them opens on
+# no earlier one. Qt's run on Qt's minimum, macOS 14.4 for Qt 6.12, on Intel and
+# Apple silicon alike, and load nothing but macOS's own libraries.
+QT="${WRITE_QT:-$HOME/Qt/6.12.0/macos}"
+if [ ! -x "$QT/bin/qmake" ]; then
+  echo "No Qt in $QT. Install Qt's own macOS binaries there, or point WRITE_QT at them:" >&2
+  echo "  uvx --from aqtinstall aqt install-qt mac desktop 6.12.0 clang_64 --archives qtbase qtsvg -m qtimageformats -O ~/Qt" >&2
+  exit 1
+fi
+QT_PLUGINS="$QT/plugins"
 
-# The plugins Write uses. macdeployqt on its own would copy every plugin
-# Homebrew's qt installs, Qt Quick and the virtual keyboard among them, and the
-# PDF image format from qtwebengine, which keeps to a Qt release of its own.
+# The plugins Write uses. macdeployqt on its own would copy every plugin the
+# Qt install has.
 PLUGINS="
 platforms/libqcocoa
 styles/libqmacstyle
@@ -56,44 +63,62 @@ rpaths() {
 
 # A clean build, since a new VERSION in write.pro doesn't rebuild on its own.
 rm -rf "$BUILD_DIR"
-BUILD_DIR="$BUILD_DIR" "$ROOT/bin/build"
+BUILD_DIR="$BUILD_DIR" QMAKE="$QT/bin/qmake" "$ROOT/bin/build"
 
 for plugin in $PLUGINS; do
   mkdir -p "$APP/Contents/PlugIns/$(dirname "$plugin")"
   cp -L "$QT_PLUGINS/$plugin.dylib" "$APP/Contents/PlugIns/$plugin.dylib"
 done
 
-# Copies in the Qt frameworks and other Homebrew libraries the app and its
-# plugins load, and points them at each other inside the bundle.
-"$MACDEPLOYQT" "$APP" -no-plugins -no-codesign -libpath="$BREW/lib"
+# Copies in the Qt frameworks the app and its plugins load, and points them at
+# each other inside the bundle.
+"$QT/bin/macdeployqt" "$APP" -no-plugins -no-codesign
 
 # macdeployqt writes qt.conf only when it deploys the plugins itself. Without
-# it, Qt would look for plugins where Homebrew keeps them.
+# it, Qt would look for plugins where Qt is installed.
 printf '[Paths]\nPlugins = PlugIns\n' > "$APP/Contents/Resources/qt.conf"
 
-# Clear what macdeployqt leaves pointing at Homebrew: the install names of some
-# libraries it copied, and run paths to where Homebrew built them.
+# Clear what still points outside the app: install names some libraries keep
+# from where they were built, and run paths to where Qt is installed.
 binaries | while IFS= read -r file; do
-  id="$(otool -D "$file" | tail -n +2)"
+  id="$(otool -D "$file" | tail -n +2 | head -n 1)"
   case "$id" in
-    "$BREW"/*)
+    /*)
       install_name_tool -id "@executable_path/../Frameworks/${file#"$APP/Contents/Frameworks/"}" "$file"
       ;;
   esac
-  rpaths "$file" | while IFS= read -r rpath; do
+  rpaths "$file" | sort -u | while IFS= read -r rpath; do
     case "$rpath" in
-      "$BREW"/*) install_name_tool -delete_rpath "$rpath" "$file" ;;
+      /*) install_name_tool -delete_rpath "$rpath" "$file" ;;
     esac
   done
 done
 
+# The app loads nothing from outside itself but macOS's own libraries.
 leftovers="$(binaries | while IFS= read -r file; do
-  { otool -L "$file" | tail -n +2; rpaths "$file"; } |
-    grep -F "$BREW/" | sed "s|^|${file#"$APP/"}: |"
+  { otool -L "$file" | awk '/^[[:space:]]/ { print $1 }'; rpaths "$file"; } |
+    grep -v -e '^@' -e '^/System/' -e '^/usr/lib/' | sort -u | sed "s|^|${file#"$APP/"}: |"
 done)"
 if [ -n "$leftovers" ]; then
-  echo "These still load from $BREW:" >&2
+  echo "These still load from outside the app:" >&2
   echo "$leftovers" >&2
+  exit 1
+fi
+
+# Nor anything that needs a newer macOS than the app says it does, which macOS
+# would refuse to load.
+MINIMUM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
+newer="$(binaries | while IFS= read -r file; do
+  otool -arch all -l "$file" | awk '$1 == "minos" { print $2 }' | sort -u |
+    while IFS= read -r minos; do
+      if [ "$(printf '%s\n%s\n' "$minos" "$MINIMUM" | sort -V | tail -n 1)" != "$MINIMUM" ]; then
+        echo "${file#"$APP/"}: macOS $minos"
+      fi
+    done
+done)"
+if [ -n "$newer" ]; then
+  echo "These need a newer macOS than $MINIMUM:" >&2
+  echo "$newer" >&2
   exit 1
 fi
 
