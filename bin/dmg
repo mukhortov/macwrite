@@ -12,6 +12,11 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
+if [ -n "${WRITE_NOTARY_PROFILE:-}" ] && [ -z "${WRITE_SIGNING_IDENTITY:-}" ]; then
+  echo "Notarizing needs WRITE_SIGNING_IDENTITY too." >&2
+  exit 1
+fi
+
 BREW="$(brew --prefix)"
 MACDEPLOYQT="$(brew --prefix qt)/bin/macdeployqt"
 QT_PLUGINS="$BREW/share/qt/plugins"
@@ -109,14 +114,13 @@ ln -s /Applications "$STAGING/Applications"
 hdiutil create -volname Write -srcfolder "$STAGING" -format UDZO -ov "$DMG"
 rm -rf "$STAGING"
 
+if [ -n "${WRITE_SIGNING_IDENTITY:-}" ]; then
+  codesign --sign "$WRITE_SIGNING_IDENTITY" --timestamp "$DMG"
+fi
+
 # Notarize when given a notarytool keychain profile, made with
 # xcrun notarytool store-credentials.
 if [ -n "${WRITE_NOTARY_PROFILE:-}" ]; then
-  if [ -z "${WRITE_SIGNING_IDENTITY:-}" ]; then
-    echo "Notarizing needs WRITE_SIGNING_IDENTITY too." >&2
-    exit 1
-  fi
-  codesign --sign "$WRITE_SIGNING_IDENTITY" --timestamp "$DMG"
   xcrun notarytool submit "$DMG" --keychain-profile "$WRITE_NOTARY_PROFILE" --wait
   xcrun stapler staple "$DMG"
 fi

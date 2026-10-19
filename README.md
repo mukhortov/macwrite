@@ -32,8 +32,10 @@ the macOS it runs on; see `macos/deployment-target.pri`.
 
 The app is signed ad hoc, so macOS blocks it the first time it opens from a
 download. Allow it with Open Anyway in System Settings › Privacy & Security.
-To sign with a Developer ID and the hardened runtime instead, set
-`WRITE_SIGNING_IDENTITY` to the identity's name. Set `WRITE_NOTARY_PROFILE`
+To sign with a Developer ID instead, set `WRITE_SIGNING_IDENTITY` to the
+identity's name, or to its SHA-1 hash from `security find-identity -v -p
+codesigning` when two certificates share a name. The app then runs with the
+hardened runtime, and the disk image is signed too. Set `WRITE_NOTARY_PROFILE`
 too, to a keychain profile from `xcrun notarytool store-credentials`, to
 notarize the disk image and staple the ticket to it.
 
