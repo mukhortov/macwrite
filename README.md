@@ -12,7 +12,7 @@ about Write here rather than upstream.
 ## Download
 
 Download `Write-VERSION.dmg` from
-[Releases](https://github.com/mukhortov/macwrite/releases), open it, and drag
+[Releases](https://github.com/mukhortov/write/releases), open it, and drag
 Write to Applications. It needs macOS 14.4 or later and runs natively on Intel
 and Apple silicon Macs. It is signed with a Developer ID and notarized by
 Apple, so it opens like any other downloaded app.
