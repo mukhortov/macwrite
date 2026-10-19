@@ -107,6 +107,17 @@ else
 fi
 codesign --verify --deep --strict "$APP"
 
+# Notarize when given a notarytool keychain profile, made with
+# xcrun notarytool store-credentials. The app gets a ticket of its own, so a
+# copy taken off the disk image opens without asking Apple first.
+if [ -n "${WRITE_NOTARY_PROFILE:-}" ]; then
+  ditto -c -k --keepParent "$APP" "$BUILD_DIR/Write.zip"
+  xcrun notarytool submit "$BUILD_DIR/Write.zip" \
+    --keychain-profile "$WRITE_NOTARY_PROFILE" --wait
+  rm "$BUILD_DIR/Write.zip"
+  xcrun stapler staple "$APP"
+fi
+
 STAGING="$BUILD_DIR/dmg"
 mkdir "$STAGING"
 ditto "$APP" "$STAGING/Write.app"
@@ -118,8 +129,6 @@ if [ -n "${WRITE_SIGNING_IDENTITY:-}" ]; then
   codesign --sign "$WRITE_SIGNING_IDENTITY" --timestamp "$DMG"
 fi
 
-# Notarize when given a notarytool keychain profile, made with
-# xcrun notarytool store-credentials.
 if [ -n "${WRITE_NOTARY_PROFILE:-}" ]; then
   xcrun notarytool submit "$DMG" --keychain-profile "$WRITE_NOTARY_PROFILE" --wait
   xcrun stapler staple "$DMG"

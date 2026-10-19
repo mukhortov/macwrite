@@ -37,7 +37,7 @@ identity's name, or to its SHA-1 hash from `security find-identity -v -p
 codesigning` when two certificates share a name. The app then runs with the
 hardened runtime, and the disk image is signed too. Set `WRITE_NOTARY_PROFILE`
 too, to a keychain profile from `xcrun notarytool store-credentials`, to
-notarize the disk image and staple the ticket to it.
+notarize the app and the disk image and staple a ticket to each.
 
 ## Opening files
 
