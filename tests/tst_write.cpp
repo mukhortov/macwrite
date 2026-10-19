@@ -2672,9 +2672,13 @@ private slots:
         QTest::keyClicks(fixture.editor(), QStringLiteral(" two"));
         QTRY_COMPARE(words->text(), QStringLiteral("2 Words"));
 
+        // The title bar names the file, so the status line says only whether
+        // it is saved.
         fixture.backend.saveAs(QUrl::fromLocalFile(directory.filePath(QStringLiteral("s.md"))));
-        QVERIFY(!fixture.backend.status().isEmpty());
-        QCOMPARE(status->text(), fixture.backend.status());
+        QCOMPARE(status->text(), QStringLiteral("Saved"));
+        QTest::keyClicks(fixture.editor(), QStringLiteral(" three"));
+        QTRY_COMPARE(status->text(), QStringLiteral("Unsaved"));
+        fixture.backend.discardRecovery();
     }
 
     void asksBeforeClosingWithUnsavedChanges() {
@@ -4648,7 +4652,7 @@ private slots:
 
         backend.openOrStartFile(QUrl::fromLocalFile(path));
         QCOMPARE(backend.fileName(), QStringLiteral("new.md"));
-        QCOMPARE(backend.status(), QStringLiteral("New file new.md"));
+        QCOMPARE(backend.status(), QStringLiteral("New file"));
         QVERIFY(!backend.modified());
         QVERIFY(!QFileInfo::exists(path));
 
@@ -4786,7 +4790,7 @@ private slots:
         QVERIFY(editor);
         backend.openOrStartFile(QUrl::fromLocalFile(path));
         QCOMPARE(editor->property("plainText").toString(), QStringLiteral("already here"));
-        QCOMPARE(backend.status(), QStringLiteral("Opened notes.md"));
+        QCOMPARE(backend.status(), QStringLiteral("Opened"));
     }
 
     void keepsDiscardedChangesOutOfTheFile() {

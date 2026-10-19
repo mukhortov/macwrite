@@ -339,13 +339,12 @@ void Backend::open(const QUrl &url) {
     watchCurrentFile();
     setModified(false);
     if (savesUnchanged(raw)) {
-        setStatus(QStringLiteral("Opened %1").arg(fileName()));
+        setStatus(QStringLiteral("Opened"));
     } else {
         // Saving writes UTF-8 with plain line endings, which would change
         // bytes this file holds. Leave that to an explicit save.
         suspendAutoSave();
-        setStatus(QStringLiteral("Opened %1. Auto-save is off to keep its encoding and line endings.")
-                      .arg(fileName()));
+        setStatus(QStringLiteral("Opened. Auto-save is off to keep its encoding and line endings."));
     }
 }
 
@@ -402,7 +401,7 @@ void Backend::openOrStartFile(const QUrl &requestedUrl) {
     setFileUrl(url);
     watchCurrentFile();
     setModified(false);
-    setStatus(QStringLiteral("New file %1").arg(fileName()));
+    setStatus(QStringLiteral("New file"));
 }
 
 void Backend::reloadFromDisk() {
@@ -557,7 +556,7 @@ bool Backend::editorTextChanged() {
         setModified(false);
         clearRecovery();
         if (m_hasKnownFileContents)
-            setStatus(QStringLiteral("Saved %1").arg(fileName()));
+            setStatus(QStringLiteral("Saved"));
         else
             setStatus(QString());
     } else {
@@ -1008,7 +1007,7 @@ void Backend::saveTo(const QUrl &url) {
     QSettings().setValue(lastSaveDirectorySetting,
                          QFileInfo(url.toLocalFile()).absolutePath());
     setModified(false);
-    setStatus(QStringLiteral("Saved %1").arg(fileName()));
+    setStatus(QStringLiteral("Saved"));
     clearRecovery();
     emit saveSucceeded();
 }
