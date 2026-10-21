@@ -17,6 +17,14 @@ Write to Applications. It needs macOS 14.4 or later and runs natively on Intel
 and Apple silicon Macs. It is signed with a Developer ID and notarized by
 Apple, so it opens like any other downloaded app.
 
+Or install it with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask mukhortov/tap/write
+```
+
+Use the full name, as Homebrew's own `write` cask is a different app.
+
 ## Build and install
 
 ```sh
